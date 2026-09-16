@@ -70,22 +70,30 @@ write JSON reports in the mounted working directory. If you run them from the
 repo root as shown above, KiCad writes `demo-erc.json` and `demo-drc.json` to
 the repo root unless you pass `--output` or use `--workdir hardware/kicad/demo`.
 
-## Fractal routing experiment
+## Fractal routing and fill experiments
 
-This repo also includes `hardware/kicad/fractal_trace_router.py`, which writes a
-deliberately absurd Hilbert-curve copper route into
-`hardware/kicad/demo/fractal_demo.kicad_pcb`.
+This repo includes two Hilbert-curve KiCad demos that share the same underlying
+fractal geometry generator in `hardware/kicad/fractal_geometry.py`:
 
-On the padless demo board it closes the shape with a short return path so KiCad
-does not flag the decorative trace as dangling copper.
+- `hardware/kicad/fractal_trace_router.py` writes a deliberately absurd routed
+  copper loop into `hardware/kicad/demo/fractal_demo.kicad_pcb`
+- `hardware/kicad/fractal_fill.py` writes a dead-space-fill art demo into
+  `hardware/kicad/demo/fractal_fill_demo.kicad_pcb` with three variants:
+  silkscreen-only, masked isolated copper, and exposed isolated copper
 
-Generate the board copy:
+The routing demo closes the shape with a short return path so KiCad does not
+flag the decorative trace as dangling copper. The fill demo instead uses
+dedicated isolated art nets (`FRACTAL_FILL_MASKED` and `FRACTAL_FILL_EXPOSED`) for the copper variants and
+keeps those art-only nets separate from any functional circuitry.
+
+Generate the board copies:
 
 ```bash
 python3 hardware/kicad/fractal_trace_router.py
+python3 hardware/kicad/fractal_fill.py
 ```
 
-Then validate and preview it:
+Then validate and preview them:
 
 ```bash
 ./scripts/kicad-cli.sh pcb drc \
@@ -93,12 +101,19 @@ Then validate and preview it:
   --output hardware/kicad/demo/fractal_demo-drc.json \
   hardware/kicad/demo/fractal_demo.kicad_pcb
 
+./scripts/kicad-cli.sh pcb drc \
+  --format json \
+  --output hardware/kicad/demo/fractal_fill_demo-drc.json \
+  --exit-code-violations \
+  hardware/kicad/demo/fractal_fill_demo.kicad_pcb
+
 ./scripts/kicad-cli.sh pcb export svg \
-  --output hardware/kicad/demo/fractal_demo.svg \
-  hardware/kicad/demo/fractal_demo.kicad_pcb
+  --output hardware/kicad/demo/fractal_fill_demo.svg \
+  hardware/kicad/demo/fractal_fill_demo.kicad_pcb
 ```
 
-See `hardware/kicad/fractal-routing-notes.md` for the blunt electrical caveats.
+See `hardware/kicad/fractal-routing-notes.md` and
+`hardware/kicad/fractal-fill-notes.md` for the blunt caveats.
 
 ## Known limitations
 
