@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import pcbnew
+from shapely import affinity
 from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Point, Polygon, box
 from shapely.ops import nearest_points, unary_union
 
+from curves.dragon_curve import dragon_curve_points
+from curves.gosper_curve import gosper_curve_points
+from curves.koch_snowflake_curve import koch_snowflake_points
+from curves.sierpinski_arrowhead_curve import sierpinski_arrowhead_curve_points
 from curves.selfavoiding_maze_path import self_avoiding_maze_path_points
 
 CLEARANCE_MM = 0.25
 EDGE_INSET_MM = 1.5
 COURTYARD_MARGIN_MM = 0.1
-TEXTURE_PITCH_MM = 3.6
-TEXTURE_WIDTH_MM = 1.2
+TEXTURE_TILE_MM = 5.4
+TEXTURE_SPACING_X_MM = 10.4
+TEXTURE_SPACING_Y_MM = 9.0
+TEXTURE_LINE_WIDTH_MM = 0.5
+TEXTURE_EDGE_MARGIN_MM = 4.8
 MIN_COMPONENT_AREA_MM2 = 3.0
 ARC_RESOLUTION = 6
 POLYGON_ERROR_MM = 0.02
@@ -212,37 +221,98 @@ def _obstacle_union(board: pcbnew.BOARD, gnd_net_name: str, clearance_mm: float)
     return unary_union(geometries).buffer(0), pads, tracks, vias, footprints
 
 
-def _mapped_maze_points(bounds: tuple[float, float, float, float], *, pitch_mm: float, transpose: bool, seed: int):
-    min_x, min_y, max_x, max_y = bounds
-    width = max_x - min_x
-    height = max_y - min_y
-    if transpose:
-        columns = max(2, int(height / pitch_mm) + 1)
-        rows = max(2, int(width / pitch_mm) + 1)
-        step_x = width / max(rows - 1, 1)
-        step_y = height / max(columns - 1, 1)
-        raw = self_avoiding_maze_path_points(columns, rows, seed=seed)
-        return [(min_x + y * step_x, min_y + x * step_y) for x, y in raw]
-    columns = max(2, int(width / pitch_mm) + 1)
-    rows = max(2, int(height / pitch_mm) + 1)
-    step_x = width / max(columns - 1, 1)
-    step_y = height / max(rows - 1, 1)
-    raw = self_avoiding_maze_path_points(columns, rows, seed=seed)
-    return [(min_x + x * step_x, min_y + y * step_y) for x, y in raw]
+def _centered_points(points: Iterable[tuple[float, float]]) -> list[tuple[float, float]]:
+    normalized = list(points)
+    if not normalized:
+        raise ValueError("curve point list cannot be empty")
+    return [(x - 0.5, y - 0.5) for x, y in normalized]
 
 
-def _maze_ribbon(bounds: tuple[float, float, float, float], *, pitch_mm: float, width_mm: float, transpose: bool, seed: int):
-    points = _mapped_maze_points(bounds, pitch_mm=pitch_mm, transpose=transpose, seed=seed)
-    return LineString(points).buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
+def _line_motif(points: Iterable[tuple[float, float]], *, tile_mm: float, width_mm: float, rotation_deg: float):
+    line = LineString(_centered_points(points))
+    geometry = line.buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
+    geometry = affinity.scale(geometry, xfact=tile_mm, yfact=tile_mm, origin=(0.0, 0.0))
+    if rotation_deg:
+        geometry = affinity.rotate(geometry, rotation_deg, origin=(0.0, 0.0))
+    return geometry
 
 
-def _continuous_texture(board_interior):
-    bounds = board_interior.bounds
-    ribbons = [
-        _maze_ribbon(bounds, pitch_mm=TEXTURE_PITCH_MM, width_mm=TEXTURE_WIDTH_MM, transpose=False, seed=0),
-        _maze_ribbon(bounds, pitch_mm=TEXTURE_PITCH_MM, width_mm=TEXTURE_WIDTH_MM, transpose=True, seed=1),
-    ]
-    return unary_union(ribbons).intersection(board_interior).buffer(0)
+def _filled_motif(points: Iterable[tuple[float, float]], *, tile_mm: float, rotation_deg: float):
+    polygon = Polygon(_centered_points(points))
+    geometry = affinity.scale(polygon, xfact=tile_mm, yfact=tile_mm, origin=(0.0, 0.0))
+    if rotation_deg:
+        geometry = affinity.rotate(geometry, rotation_deg, origin=(0.0, 0.0))
+    return geometry
+
+
+def _motif_geometry(row: int, column: int):
+    variant = (row + (2 * column)) % 4
+    if variant == 0:
+        return _filled_motif(
+            koch_snowflake_points(1, anti=True),
+            tile_mm=TEXTURE_TILE_MM,
+            rotation_deg=30.0 * ((row + column) % 6),
+        )
+    if variant == 1:
+        return _line_motif(
+            gosper_curve_points(2),
+            tile_mm=TEXTURE_TILE_MM,
+            width_mm=TEXTURE_LINE_WIDTH_MM,
+            rotation_deg=60.0 * (column % 6),
+        )
+    if variant == 2:
+        return _line_motif(
+            dragon_curve_points(8),
+            tile_mm=TEXTURE_TILE_MM * 0.94,
+            width_mm=TEXTURE_LINE_WIDTH_MM * 0.9,
+            rotation_deg=45.0 * ((row + column) % 4),
+        )
+    raw = self_avoiding_maze_path_points(4, 4, seed=(row + column) % 2)
+    sampled = raw[::2]
+    if sampled[-1] != raw[-1]:
+        sampled.append(raw[-1])
+    min_raw_x = min(x for x, _ in sampled)
+    max_raw_x = max(x for x, _ in sampled)
+    min_raw_y = min(y for _, y in sampled)
+    max_raw_y = max(y for _, y in sampled)
+    span_x = max_raw_x - min_raw_x
+    span_y = max_raw_y - min_raw_y
+    normalized = [((x - min_raw_x) / span_x, (y - min_raw_y) / span_y) for x, y in sampled]
+    return _line_motif(
+        normalized,
+        tile_mm=TEXTURE_TILE_MM,
+        width_mm=TEXTURE_LINE_WIDTH_MM * 0.85,
+        rotation_deg=90.0 * ((row + column) % 4),
+    )
+
+
+def _decorative_cutouts(board_interior):
+    min_x, min_y, max_x, max_y = board_interior.bounds
+    safe_interior = board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)
+    motif_parts = []
+    row_step = TEXTURE_SPACING_Y_MM
+    col_step = TEXTURE_SPACING_X_MM
+    max_rows = int(((max_y - min_y) / row_step) + 3)
+    max_cols = int(((max_x - min_x) / col_step) + 3)
+    for row in range(max_rows):
+        center_y = min_y + (row * row_step)
+        if center_y > max_y:
+            continue
+        x_offset = (col_step / 2.0) if (row % 2) else 0.0
+        for column in range(max_cols):
+            center_x = min_x + x_offset + (column * col_step)
+            if center_x > max_x:
+                continue
+            motif = affinity.translate(_motif_geometry(row, column), xoff=center_x, yoff=center_y)
+            if safe_interior.is_empty or not motif.within(safe_interior):
+                continue
+            motif = motif.buffer(0)
+            if motif.is_empty or motif.area < MIN_COMPONENT_AREA_MM2:
+                continue
+            motif_parts.append(motif)
+    if not motif_parts:
+        raise ValueError("decorative cutout placement produced no motifs")
+    return unary_union(motif_parts).intersection(board_interior).buffer(0)
 
 
 def _bridge_anchors(geometry, anchors: list[Polygon], obstacle_union, board_interior):
@@ -250,7 +320,7 @@ def _bridge_anchors(geometry, anchors: list[Polygon], obstacle_union, board_inte
     significant = [polygon for polygon in _iter_polygons(geometry) if polygon.area >= MIN_COMPONENT_AREA_MM2]
     if not significant:
         raise ValueError("continuous texture did not produce any usable polygons")
-    major_geometry = unary_union(sorted(significant, key=lambda polygon: polygon.area, reverse=True)[:3]).buffer(0)
+    major_geometry = unary_union(significant).buffer(0)
     bridge_parts = []
     anchored_major = False
     for anchor in anchors:
@@ -258,7 +328,7 @@ def _bridge_anchors(geometry, anchors: list[Polygon], obstacle_union, board_inte
             bridge_parts.append(anchor)
             anchored_major = True
             continue
-        if major_geometry.distance(anchor) > 1.25:
+        if major_geometry.distance(anchor) > 8.0:
             continue
         anchor_point, texture_point = nearest_points(anchor, major_geometry)
         bridge = LineString([anchor_point.coords[0], texture_point.coords[0]]).buffer(0.22, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
@@ -345,11 +415,9 @@ def apply_continuous_texture_fill(
     if not anchors:
         raise ValueError("no existing GND vias available to anchor decorative copper")
 
-    texture = _continuous_texture(board_interior)
-    carved = texture.difference(obstacle_union).buffer(0)
-    bridged = _bridge_anchors(carved, anchors, obstacle_union, board_interior)
-    anchored = _keep_anchored_components(bridged, anchors)
-    final_geometry = anchored.intersection(board_interior).buffer(0)
+    decorative_cutouts = _decorative_cutouts(board_interior)
+    carved = board_interior.difference(unary_union([obstacle_union, decorative_cutouts])).buffer(0)
+    final_geometry = _bridge_anchors(carved, anchors, obstacle_union, board_interior).intersection(board_interior).buffer(0)
     if final_geometry.is_empty:
         raise ValueError("continuous texture fill produced no valid copper area")
 
@@ -371,5 +439,8 @@ def apply_continuous_texture_fill(
         outer_rings=_count_outer_rings(final_geometry),
         holes=_count_holes(final_geometry),
         exposed_area_mm2=final_geometry.area,
-        maze_motif="two overlaid space-filling ribbons generated from curves/selfavoiding_maze_path.py",
+        maze_motif=(
+            "tiled local selfavoiding_maze_path motifs mixed with Koch, Gosper, Dragon, "
+            "and Sierpinski cutouts inside one continuous copper background"
+        ),
     )

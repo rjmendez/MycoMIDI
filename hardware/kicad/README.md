@@ -214,24 +214,26 @@ python3 hardware/kicad/fractal_fill.py \
 
 The real-board profile:
 
-- parses the actual board `Edge.Cuts` loop and scans the real board interior
-  instead of using three hardcoded decorative rectangles
-- builds obstacle bounds from existing pads, routed tracks, vias, footprint
-  extents, and silkscreen/text so the fill follows the routed board geometry
-- merges free grid cells into rectangular regions, then reshapes the usable
-  exposed-copper regions with closed Koch-derived boundaries instead of leaving
-  them as plain rectangles
-- confirms the routed board already defines `GND` in the KiCad net table and
-  uses that real net id for every decorative copper zone/corridor
-- emits the real-board copper as solid exposed front-layer `GND` zones whose
-  full outer silhouettes are fractalized, rather than as sparse decorative
-  trace skeletons or rectangles with a single notched edge
-- routes the copper variants only from existing `GND` anchors, so every new
-  copper object remains a `GND`-to-`GND` addition
-- when `pcbnew` is available, immediately refills those zones and saves the
-  computed `filled_polygon` data back into the board file
-- keeps the visible exposed copper and the hidden connector corridors
-  electrically safe because both only connect `GND` to `GND`
+- reads the real `Edge.Cuts` outline through `pcbnew` and insets it to define a
+  true full-board interior polygon
+- unions real obstacles with `shapely`: exact pad polygons, routed track/via
+  copper, and each footprint courtyard (falling back to body bounds only if a
+  courtyard is missing)
+- generates a continuous whole-board copper background, then punches a tiled
+  mix of negative-space motifs through it: local cutout motifs from
+  `curves/selfavoiding_maze_path.py` plus Koch, Gosper, Dragon, and
+  Sierpinski-derived shapes
+- subtracts both the obstacle union and those decorative cutout motifs from the
+  continuous copper background, so the `GND` texture gets real obstacle
+  clearances and visibly irregular patterned voids instead of a waffle grid or
+  a few pre-detected rectangles
+- replaces the old `adc-fractal-fill-region-*` / `adc-fractal-fill-corridor-*`
+  sticker zones with one new front-copper `GND` zone object carrying multiple
+  polygon outlines/holes as needed
+- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean;
+  inspect the pattern in the exported copper-layer SVG render
+- refills the zone with `pcbnew` immediately, baking fresh `filled_polygon`
+  data back into the checked-in `.kicad_pcb` file
 
 ### Current status
 
@@ -241,10 +243,9 @@ The real-board profile:
 - The previous handwritten routing pass created many same-layer crossings and
   shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
   produces a clean DRC on this board.
-- The real ADS131M08 board now carries decorative multi-curve exposed copper on
-  `F.Cu`; the visible art is tied to the existing `GND` net, not isolated on
-  dummy art-only nets. The current visible boundary families are Koch-derived
-  closed polygons at modest orders chosen to keep KiCad zone filling reliable.
+- The real ADS131M08 board now carries a continuous `GND` copper background on
+  `F.Cu` with tiled negative-space fractal/maze cutouts, not isolated dummy
+  art-only nets and not the earlier rectangle-and-corridor sticker layout.
 - The checked-in C5 reference position is offset to keep the exposed copper
   clear and preserve a zero-violation DRC.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
