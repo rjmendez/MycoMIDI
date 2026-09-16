@@ -44,7 +44,8 @@ The repository now includes a real ADS131M08-based 8-channel board flow:
 - `hardware/kicad/ads131m08_skidl.py` — shared SKiDL part/templates
 - `hardware/kicad/generate_channel.py` — single-channel prototype using the real ADS131M08 pinout
 - `hardware/kicad/generate_board.py` — 8-channel ADS131M08 netlist generator
-- `hardware/kicad/build_adc_board_layout.py` — KiCad/`pcbnew` script that imports the generated netlist and writes a placed+routed PCB
+- `hardware/kicad/build_adc_board_layout.py` — KiCad/`pcbnew` script that imports the generated netlist, places the board, and exports a Freerouting-ready DSN
+- `scripts/autoroute-adc-board.sh` — reproducible KiCad → Freerouting → KiCad pipeline that writes the final routed PCB
 - `hardware/kicad/adc_board/adc_board_8ch.net` — generated SKiDL netlist
 - `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb` — generated PCB layout
 
@@ -86,15 +87,27 @@ python -c "import skidl, kiutils, skip"
 python hardware/kicad/generate_board.py
 ```
 
-### Generate the PCB
+### Generate the placed PCB + DSN
 
 `build_adc_board_layout.py` needs KiCad's `pcbnew` Python module, so run it in
-the pinned KiCad container:
+the pinned KiCad container. It writes both a placed KiCad board and a Specctra
+DSN for Freerouting:
 
 ```bash
 docker run --rm -v "$PWD:/work" -w /work \
   kicad/kicad:9.0 \
-  python3 hardware/kicad/build_adc_board_layout.py
+  python3 hardware/kicad/build_adc_board_layout.py \
+    --output hardware/kicad/adc_board/adc_board_8ch_unrouted.kicad_pcb \
+    --dsn-output hardware/kicad/adc_board/adc_board_8ch_unrouted.dsn
+```
+
+### Autoroute with Freerouting
+
+The clean routed board is now produced with Freerouting rather than the prior
+handwritten point-to-point router:
+
+```bash
+./scripts/autoroute-adc-board.sh
 ```
 
 ### Validate with DRC
@@ -107,13 +120,13 @@ docker run --rm -v "$PWD:/work" -w /work \
   hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
 ```
 
-### Current status / limitations
+### Current status
 
-- The board file is a real KiCad PCB with outline, placed footprints, and routed
-  analog/power/digital traces.
+- The board file is a real KiCad PCB with outline, placed footprints, and a
+  Freerouting-generated two-layer route.
 - The ADS131M08 pinout is datasheet-sourced for the TQFP-32 package.
-- The current scripted routing is still prototype-quality rather than
-  manufacturing-ready: the latest DRC report shows remaining routing/clearance
-  violations that should be cleaned up in KiCad before fabrication.
-- The goal of this revision is to replace the prior fake per-channel ADC netlist
-  with a renderable real-package board starting point.
+- The previous handwritten routing pass created many same-layer crossings and
+  shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
+  produces a clean DRC on this board.
+- `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
+  checked-in `adc_board_8ch.kicad_pcb`.

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import re
 import sys
@@ -14,18 +12,14 @@ except ImportError as exc:  # pragma: no cover - only hit outside KiCad runtime.
         "pcbnew is required. Run this script inside KiCad's Python environment or the kicad/kicad:9.0 container."
     ) from exc
 
-BOARD_WIDTH_MM = 60.0
-BOARD_HEIGHT_MM = 40.0
+BOARD_WIDTH_MM = 92.0
+BOARD_HEIGHT_MM = 70.0
 OUTLINE_MARGIN_MM = 2.0
-ANALOG_TRACK_WIDTH_MM = 0.20
-SIGNAL_TRACK_WIDTH_MM = 0.25
-POWER_TRACK_WIDTH_MM = 0.35
-VIA_DIAMETER_MM = 0.60
-VIA_DRILL_MM = 0.30
 FOOTPRINT_LIB_ROOT = Path("/usr/share/kicad/footprints")
 SCRIPT_DIR = Path(__file__).resolve().parent
 ADC_BOARD_NETLIST = SCRIPT_DIR / "adc_board" / "adc_board_8ch.net"
 ADC_BOARD_PCB = SCRIPT_DIR / "adc_board" / "adc_board_8ch.kicad_pcb"
+ADC_BOARD_DSN = SCRIPT_DIR / "adc_board" / "adc_board_8ch.dsn"
 
 
 @dataclass(frozen=True)
@@ -43,31 +37,16 @@ class Placement:
 
 
 PLACEMENTS = {
-    "U1": Placement(30.0, 20.0, 0.0),
-    "J1": Placement(8.0, 11.0, 0.0),
-    "J2": Placement(54.0, 7.5, 0.0),
-    "J3": Placement(54.0, 23.5, 0.0),
-    "C1": Placement(35.8, 25.6, 0.0),
-    "C2": Placement(39.2, 25.6, 0.0),
-    "C3": Placement(35.8, 14.0, 0.0),
-    "C4": Placement(39.2, 14.0, 0.0),
-    "C5": Placement(39.0, 21.6, 90.0),
-    "C6": Placement(39.0, 18.2, 90.0),
-}
-
-
-TOP_ANALOG_LANES = {
-    "AIN0P": 12.2,
-    "AIN0N": 12.9,
-    "AIN1N": 13.6,
-    "AIN1P": 14.3,
-}
-
-BOTTOM_ANALOG_LANES = {
-    "AIN6P": 26.2,
-    "AIN6N": 26.9,
-    "AIN7N": 27.6,
-    "AIN7P": 28.3,
+    "U1": Placement(44.0, 44.0, 0.0),
+    "J1": Placement(8.0, 12.0, 0.0),
+    "J2": Placement(82.0, 10.0, 0.0),
+    "J3": Placement(82.0, 32.0, 0.0),
+    "C1": Placement(49.0, 58.0, 0.0),
+    "C2": Placement(53.0, 58.0, 0.0),
+    "C3": Placement(49.0, 30.0, 0.0),
+    "C4": Placement(53.0, 30.0, 0.0),
+    "C5": Placement(60.0, 49.5, 90.0),
+    "C6": Placement(60.0, 38.5, 90.0),
 }
 
 def mm(value: float) -> int:
@@ -209,246 +188,32 @@ def place_components(
         footprints[ref] = footprint
     return footprints
 
-
-def pad_xy_mm(footprint: pcbnew.FOOTPRINT, pad_number: str) -> tuple[float, float]:
-    for pad in footprint.Pads():
-        if pad.GetNumber() == pad_number:
-            pos = pad.GetPosition()
-            return pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
-    raise KeyError(f"Pad {pad_number} not found on {footprint.GetReference()}")
-
-
-def add_track(board: pcbnew.BOARD, net: pcbnew.NETINFO_ITEM, start: tuple[float, float], end: tuple[float, float], *, layer: int, width_mm: float) -> None:
-    track = pcbnew.PCB_TRACK(board)
-    track.SetLayer(layer)
-    track.SetNet(net)
-    track.SetWidth(mm(width_mm))
-    track.SetStart(point(*start))
-    track.SetEnd(point(*end))
-    board.Add(track)
-
-
-def add_via(board: pcbnew.BOARD, net: pcbnew.NETINFO_ITEM, at: tuple[float, float]) -> None:
-    via = pcbnew.PCB_VIA(board)
-    via.SetNet(net)
-    via.SetPosition(point(*at))
-    via.SetDrill(mm(VIA_DRILL_MM))
-    via.SetWidth(mm(VIA_DIAMETER_MM))
-    via.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
-    board.Add(via)
-
-
-def add_path(board: pcbnew.BOARD, net: pcbnew.NETINFO_ITEM, points_mm: list[tuple[float, float]], *, layer: int, width_mm: float) -> None:
-    for start, end in zip(points_mm, points_mm[1:]):
-        add_track(board, net, start, end, layer=layer, width_mm=width_mm)
-
-
-def route_via_trunk(
-    board: pcbnew.BOARD,
-    net: pcbnew.NETINFO_ITEM,
-    start: tuple[float, float],
-    back_path: list[tuple[float, float]],
-    end_via: tuple[float, float],
-    front_path: list[tuple[float, float]],
-    *,
-    width_mm: float,
-) -> None:
-    add_path(board, net, [start, *back_path, end_via], layer=pcbnew.B_Cu, width_mm=width_mm)
-    add_via(board, net, end_via)
-    add_path(board, net, [end_via, *front_path], layer=pcbnew.F_Cu, width_mm=width_mm)
-
-
-def route_analog_inputs(board: pcbnew.BOARD, nets: dict[str, pcbnew.NETINFO_ITEM], fps: dict[str, pcbnew.FOOTPRINT]) -> None:
-    header = fps["J1"]
-    adc = fps["U1"]
-    trunk_x = [12.5 + (index * 0.8) for index in range(16)]
-    analog_order = [
-        ("AIN0P", "29", "1"),
-        ("AIN0N", "30", "2"),
-        ("AIN1P", "32", "3"),
-        ("AIN1N", "31", "4"),
-        ("AIN2P", "1", "5"),
-        ("AIN2N", "2", "6"),
-        ("AIN3P", "4", "7"),
-        ("AIN3N", "3", "8"),
-        ("AIN4P", "5", "9"),
-        ("AIN4N", "6", "10"),
-        ("AIN5P", "8", "11"),
-        ("AIN5N", "7", "12"),
-        ("AIN6P", "9", "13"),
-        ("AIN6N", "10", "14"),
-        ("AIN7P", "12", "15"),
-        ("AIN7N", "11", "16"),
-    ]
-
-    for index, (net_name, adc_pad, header_pad) in enumerate(analog_order):
-        net = nets[net_name]
-        start = pad_xy_mm(header, header_pad)
-        pad_x, pad_y = pad_xy_mm(adc, adc_pad)
-        bus_x = trunk_x[index]
-        is_positive_column = int(header_pad) % 2 == 1
-        start_lane_y = start[1] - 0.7 if is_positive_column else start[1] + 0.7
-
-        if net_name in TOP_ANALOG_LANES:
-            lane_y = TOP_ANALOG_LANES[net_name]
-            end_via = (bus_x, lane_y)
-            front_path = [(pad_x, lane_y), (pad_x, pad_y)]
-        elif net_name in BOTTOM_ANALOG_LANES:
-            lane_y = BOTTOM_ANALOG_LANES[net_name]
-            end_via = (bus_x, lane_y)
-            front_path = [(pad_x, lane_y), (pad_x, pad_y)]
-        else:
-            end_via = (bus_x, pad_y)
-            front_path = [(pad_x, pad_y)]
-        route_via_trunk(
-            board,
-            net,
-            start,
-            (
-                [(6.2, start[1]), (6.2, start_lane_y), (bus_x, start_lane_y), (bus_x, end_via[1])]
-                if is_positive_column
-                else [(start[0], start_lane_y), (bus_x, start_lane_y), (bus_x, end_via[1])]
-            ),
-            end_via,
-            front_path,
-            width_mm=ANALOG_TRACK_WIDTH_MM,
-        )
-
-
-def route_digital_headers(board: pcbnew.BOARD, nets: dict[str, pcbnew.NETINFO_ITEM], fps: dict[str, pcbnew.FOOTPRINT]) -> None:
-    adc = fps["U1"]
-    spi = fps["J2"]
-    power = fps["J3"]
-    routes = {
-        "CS": (spi, "1", adc, "17", 50.0, "right"),
-        "DRDY": (spi, "5", adc, "18", 49.0, "right"),
-        "SCLK": (spi, "2", adc, "19", 48.0, "right"),
-        "DOUT": (spi, "4", adc, "20", 47.0, "right"),
-        "DIN": (spi, "3", adc, "21", 46.0, "right"),
-        "CLKIN": (power, "4", adc, "23", 45.0, "right"),
-        "SYNC_RESET": (power, "5", adc, "16", 44.0, "bottom"),
-    }
-    for net_name, (src_fp, src_pad, dst_fp, dst_pad, bus_x, side) in routes.items():
-        net = nets[net_name]
-        start = pad_xy_mm(src_fp, src_pad)
-        pad_x, pad_y = pad_xy_mm(dst_fp, dst_pad)
-        if side == "bottom":
-            lane_y = 28.8
-            end_via = (bus_x, lane_y)
-            front_path = [(pad_x, lane_y), (pad_x, pad_y)]
-        else:
-            end_via = (bus_x, pad_y)
-            front_path = [(pad_x, pad_y)]
-        route_via_trunk(
-            board,
-            net,
-            start,
-            [(bus_x, start[1]), (bus_x, end_via[1])],
-            end_via,
-            front_path,
-            width_mm=SIGNAL_TRACK_WIDTH_MM,
-        )
-
-
-def route_power_and_caps(board: pcbnew.BOARD, nets: dict[str, pcbnew.NETINFO_ITEM], fps: dict[str, pcbnew.FOOTPRINT]) -> None:
-    adc = fps["U1"]
-    power = fps["J3"]
-
-    avdd = nets["AVDD"]
-    dvdd = nets["DVDD"]
-    gnd = nets["GND"]
-    refp = nets["REFP"]
-    cap = nets["CAP"]
-
-    # AVDD header -> caps -> ADC pin 15.
-    j3_avdd = pad_xy_mm(power, "1")
-    c1_p1 = pad_xy_mm(fps["C1"], "1")
-    c2_p1 = pad_xy_mm(fps["C2"], "1")
-    u1_avdd = pad_xy_mm(adc, "15")
-    add_path(board, avdd, [j3_avdd, (44.0, j3_avdd[1]), (44.0, c1_p1[1]), c1_p1], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-    add_path(board, avdd, [c1_p1, (37.4, c1_p1[1]), c2_p1], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-    add_path(board, avdd, [c1_p1, (u1_avdd[0], c1_p1[1]), u1_avdd], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-
-    # DVDD header -> caps -> ADC pin 26.
-    j3_dvdd = pad_xy_mm(power, "2")
-    c3_p1 = pad_xy_mm(fps["C3"], "1")
-    c4_p1 = pad_xy_mm(fps["C4"], "1")
-    u1_dvdd = pad_xy_mm(adc, "26")
-    add_path(board, dvdd, [j3_dvdd, (46.0, j3_dvdd[1]), (46.0, c3_p1[1]), c3_p1], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-    add_path(board, dvdd, [c3_p1, (37.4, c3_p1[1]), c4_p1], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-    add_path(board, dvdd, [c3_p1, (u1_dvdd[0], c3_p1[1]), u1_dvdd], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-
-    # REFIN alias (REFP) and CAP support capacitors.
-    c5_p1 = pad_xy_mm(fps["C5"], "1")
-    u1_ref = pad_xy_mm(adc, "14")
-    add_path(board, refp, [c5_p1, (u1_ref[0], c5_p1[1]), u1_ref], layer=pcbnew.F_Cu, width_mm=SIGNAL_TRACK_WIDTH_MM)
-
-    c6_p1 = pad_xy_mm(fps["C6"], "1")
-    u1_cap = pad_xy_mm(adc, "24")
-    add_path(board, cap, [u1_cap, (36.6, u1_cap[1]), c6_p1], layer=pcbnew.F_Cu, width_mm=SIGNAL_TRACK_WIDTH_MM)
-
-    # Ground trunk on B.Cu, then fan out with F.Cu stubs through dedicated vias.
-    j3_gnd = pad_xy_mm(power, "3")
-    trunk_x = 52.0
-    trunk = [j3_gnd, (trunk_x, j3_gnd[1]), (trunk_x, 12.6)]
-    add_path(board, gnd, trunk, layer=pcbnew.B_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-
-    branch_vias = {
-        "C1": ((42.2, 27.0), "2"),
-        "C2": ((44.2, 27.0), "2"),
-        "C3": ((42.2, 12.6), "2"),
-        "C4": ((44.2, 12.6), "2"),
-        "C5": ((36.2, 23.0), "2"),
-        "C6": ((41.0, 16.6), "2"),
-    }
-    for ref, (via_point, pad_num) in branch_vias.items():
-        add_path(board, gnd, [(trunk_x, via_point[1]), via_point], layer=pcbnew.B_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-        add_via(board, gnd, via_point)
-        pad2 = pad_xy_mm(fps[ref], pad_num)
-        add_path(board, gnd, [via_point, pad2], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-
-    adc_ground_vias = {
-        "13": (30.4, 25.8),
-        "25": (32.8, 15.2),
-        "28": (30.4, 15.2),
-    }
-    for pad_num, via_point in adc_ground_vias.items():
-        add_path(board, gnd, [(trunk_x, via_point[1]), via_point], layer=pcbnew.B_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-        add_via(board, gnd, via_point)
-        pad = pad_xy_mm(adc, pad_num)
-        add_path(board, gnd, [via_point, pad], layer=pcbnew.F_Cu, width_mm=POWER_TRACK_WIDTH_MM)
-
-
 def annotate_board(board: pcbnew.BOARD) -> None:
-    text = pcbnew.PCB_TEXT(board)
-    text.SetText("MycoMIDI ADS131M08 8ch prototype")
-    text.SetLayer(pcbnew.F_SilkS)
-    text.SetTextHeight(mm(1.2))
-    text.SetTextWidth(mm(1.2))
-    text.SetPosition(point(16.0, 31.0))
-    board.Add(text)
+    return None
 
 
-def build_board(netlist_path: Path, output_path: Path) -> None:
+def build_board(netlist_path: Path, output_path: Path, dsn_output_path: Path | None = None) -> None:
     netlist = NetlistData(netlist_path)
     netlist.load()
 
     board = pcbnew.BOARD()
     add_outline(board)
     nets = create_nets(board, netlist.net_names)
-    footprints = place_components(board, netlist, nets)
-    route_analog_inputs(board, nets, footprints)
-    route_digital_headers(board, nets, footprints)
-    route_power_and_caps(board, nets, footprints)
+    place_components(board, netlist, nets)
     annotate_board(board)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pcbnew.SaveBoard(str(output_path), board)
+    if dsn_output_path is not None:
+        dsn_output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not pcbnew.ExportSpecctraDSN(board, str(dsn_output_path)):
+            raise RuntimeError(f"Failed to export Specctra DSN to {dsn_output_path}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build the placed+routed ADS131M08 KiCad PCB from the generated SKiDL netlist.")
+    parser = argparse.ArgumentParser(description="Build the placed ADS131M08 KiCad PCB from the generated SKiDL netlist.")
     parser.add_argument("--netlist", type=Path, default=ADC_BOARD_NETLIST)
     parser.add_argument("--output", type=Path, default=ADC_BOARD_PCB)
+    parser.add_argument("--dsn-output", type=Path, default=ADC_BOARD_DSN)
     return parser.parse_args()
 
 
@@ -457,9 +222,11 @@ def main() -> int:
     if not args.netlist.exists():
         print(f"error: netlist does not exist: {args.netlist}", file=sys.stderr)
         return 66
-    build_board(args.netlist, args.output)
+    build_board(args.netlist, args.output, args.dsn_output)
     print(f"Wrote {args.output}")
-    print("Placed U1 centrally, J1 on the left edge, J2/J3 on the right edge, and routed analog/power/SPI support traces.")
+    if args.dsn_output is not None:
+        print(f"Wrote {args.dsn_output}")
+    print("Placed U1 centrally, J1 on the left edge, J2/J3 on the right edge, and exported a Freerouting-ready DSN.")
     return 0
 
 
