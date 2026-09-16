@@ -33,31 +33,33 @@ different deployment styles:
 
 ## Real ADS131M08 board strategy
 
-The real-board profile is different on purpose.
+The real-board profile no longer drops three hardcoded stamps into hand-picked
+rectangles.
 
-For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`, the user explicitly
-requested that the decorative copper stop pretending to be isolated art and
-instead join the real board ground.
+For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
+`fractal_fill.py --profile adc-board-gnd` now:
 
-`fractal_fill.py --profile adc-board-gnd` therefore:
+1. parses the actual `Edge.Cuts` loop from the routed KiCad board instead of
+   trusting a fixed board-size tuple
+2. reuses the board-text obstacle pass to enumerate pads, tracks, vias,
+   footprint extents, and existing silk/text bounds
+3. grid-scans the real board interior and marks cells free/blocked using the
+   same clearance model as the decorative fill (`0.25 mm` local clearance,
+   `0.45 mm` region clearance for copper)
+4. greedily merges contiguous free cells into candidate rectangles
+5. tiles the shared Hilbert geometry repeatedly across each useful rectangle
+   instead of placing one fixed-size fractal in each area
+6. routes the real-board copper variants only from anchor points already on the
+   real `GND` network, then emits every new segment/via on that same KiCad net
 
-- reads the real KiCad net table from the routed board
-- confirms the board already uses the actual net name `GND`
-- assigns every decorative copper segment and stitching via to that existing
-  `GND` net id
-- anchors both copper variants to an existing routed `GND` via near the empty
-  space between the decoupling cluster and the right-side support caps
-- keeps the copper traces intentionally thin (`0.1 mm`) so the art stays
-  visibly secondary to the functional routing
+The result is still approximate rather than polygon-perfect: the free-space
+detector is grid/rectangle based, not a general polygon boolean engine. But it
+reacts to the actual routed board instead of a few manually chosen decorative
+patches.
 
 That means the safety argument changes from **\"isolated art cannot short
 anything\"** to **\"GND-connected art only touches GND, so it still cannot short
 two different nets together\"**.
-
-The script also validates the chosen placement rectangles against the already
-routed board geometry before writing the new board file. It checks clearances
-against pads, tracks, vias, and footprint-body bounds so the decorative copper
-does not drift into analog inputs, SPI nets, or power nets other than ground.
 
 ## Isolation strategy
 
@@ -84,8 +86,9 @@ the functional routing width. The fractal is decorative GND augmentation, not a
 high-current power feed and not a precision impedance-controlled signal, so
 there is no reason to make it as fat as the real traces.
 
-If you later want truly flood-filled fractal polygons, build that on top of the same
-Hilbert geometry only after validating the polygon boolean/offset math carefully.
+If you later want truly flood-filled fractal polygons, build that on top of the
+same Hilbert geometry only after validating the polygon boolean/offset math
+carefully.
 
 ## Honest caveats
 
@@ -94,7 +97,12 @@ Hilbert geometry only after validating the polygon boolean/offset math carefully
 - It is **not** an RF structure.
 - It is **not** a return-path optimization.
 - It should not be counted as useful thermal copper.
-- The demo-board copper art is intentionally floating; the ADS131M08-board copper art is intentionally GND-tied. In neither case should you assume meaningful EMC improvement without separate evidence.
+- The demo-board copper art is intentionally floating; the ADS131M08-board
+  copper art is intentionally GND-tied. In neither case should you assume
+  meaningful EMC improvement without separate evidence.
+- The real-board pass is a **grid-derived rectangle tiler**. It covers much more
+  real empty area than the earlier three-rectangle version, but it can still
+  leave awkward slivers or irregular leftover pockets unfilled.
 - Exposed copper art can tarnish, fingerprint, or cosmetically vary depending on board finish.
 - Keep decorative copper well away from analog front ends, high-impedance nodes, clocks, and anything safety-critical.
 

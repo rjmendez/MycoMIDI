@@ -214,13 +214,19 @@ python3 hardware/kicad/fractal_fill.py \
 
 The real-board profile:
 
+- parses the actual board `Edge.Cuts` loop and scans the real board interior
+  instead of using three hardcoded decorative rectangles
+- builds obstacle bounds from existing pads, routed tracks, vias, footprint
+  extents, and silkscreen/text so the fill follows the routed board geometry
+- merges free grid cells into rectangular regions, then tiles repeated Hilbert
+  curves across those detected regions
 - confirms the routed board already defines `GND` in the KiCad net table and
   uses that real net id for every decorative copper segment/via
 - keeps the decorative copper intentionally narrow at `0.1 mm`, which is much
   smaller than the board's functional `0.2 mm` routes because this art is only
   augmenting ground copper, not carrying a dedicated signal or power path
-- validates the chosen empty rectangles against existing pads, vias, traces, and
-  footprint bodies before writing the board
+- routes the copper variants only from existing `GND` anchors, so every new
+  copper segment/via remains a `GND`-to-`GND` addition
 - leaves the masked/tented and exposed/unmasked copper variants electrically
   safe because both only connect `GND` to `GND`
 
