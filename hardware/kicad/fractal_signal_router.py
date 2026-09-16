@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from curves.dragon_curve import dragon_curve_points
 from curves.gosper_curve import gosper_curve_points
 from curves.selfavoiding_maze_path import self_avoiding_maze_path_points
 from curves.sierpinski_arrowhead_curve import sierpinski_arrowhead_curve_points
@@ -25,46 +26,58 @@ class RoutePlan:
     layer: str
     start: tuple[float, float]
     end: tuple[float, float]
+    left_lane_x: float
+    band_start: tuple[float, float]
+    band_end: tuple[float, float]
+    right_lane_x: float
     spread_mm: float
+    width_mm: float = 0.2
+    preserve_segments: tuple[tuple[tuple[float, float], tuple[float, float]], ...] = ()
     curve_args: tuple[tuple[str, int], ...] = ()
 
 
 ROUTE_PLANS: tuple[RoutePlan, ...] = (
     RoutePlan(
-        net_name="AIN0N",
-        family="maze",
-        layer="B.Cu",
-        start=(15.531, 12.0),
-        end=(42.1075, 38.5765),
-        spread_mm=0.55,
-        curve_args=(("columns", 5), ("rows", 3), ("seed", 7)),
-    ),
-    RoutePlan(
-        net_name="AIN1P",
-        family="peano",
-        layer="B.Cu",
-        start=(14.728, 13.3655),
-        end=(40.4106, 39.0481),
-        spread_mm=-0.55,
-        curve_args=(("order", 1),),
-    ),
-    RoutePlan(
-        net_name="AIN2P",
-        family="sierpinski",
-        layer="B.Cu",
-        start=(14.5129, 15.8754),
-        end=(39.0382, 40.4007),
-        spread_mm=0.45,
-        curve_args=(("order", 3),),
-    ),
-    RoutePlan(
-        net_name="AIN5P",
+        net_name="AIN3P",
         family="gosper",
         layer="B.Cu",
+        start=(13.4683, 23.3117),
+        end=(35.8618, 45.7052),
+        left_lane_x=13.8,
+        band_start=(18.0, 46.0),
+        band_end=(30.0, 46.0),
+        right_lane_x=34.5,
+        spread_mm=2.6,
+        preserve_segments=(
+            ((9.27, 20.89), (8.0, 19.62)),
+            ((10.063, 23.3117), (9.27, 22.5187)),
+            ((9.27, 22.5187), (9.27, 20.89)),
+            ((13.4683, 23.3117), (10.063, 23.3117)),
+            ((38.5975, 43.3757), (38.5975, 44.3338)),
+            ((38.5975, 44.3338), (37.2261, 45.7052)),
+            ((37.2261, 45.7052), (35.8618, 45.7052)),
+        ),
+        curve_args=(("order", 2),),
+    ),
+    RoutePlan(
+        family="maze",
+        layer="B.Cu",
+        net_name="AIN5P",
         start=(13.3183, 28.3917),
         end=(31.5023, 46.5757),
-        spread_mm=-0.9,
-        curve_args=(("order", 1),),
+        left_lane_x=13.2,
+        band_start=(18.0, 60.5),
+        band_end=(28.5, 60.5),
+        right_lane_x=31.6,
+        spread_mm=1.8,
+        preserve_segments=(
+            ((8.0, 24.7), (9.27, 25.97)),
+            ((9.27, 25.97), (9.27, 27.5987)),
+            ((9.27, 27.5987), (10.063, 28.3917)),
+            ((10.063, 28.3917), (13.3183, 28.3917)),
+            ((31.5023, 46.5757), (37.395, 46.5757)),
+        ),
+        curve_args=(("columns", 8), ("rows", 4), ("seed", 21)),
     ),
 )
 
@@ -77,6 +90,8 @@ def curve_points(plan: RoutePlan) -> list[tuple[float, float]]:
     kwargs = _curve_kwargs(plan)
     if plan.family == "hilbert":
         return [(float(x), float(y)) for x, y in generate_hilbert_points(kwargs["order"])]
+    if plan.family == "dragon":
+        return dragon_curve_points(kwargs["order"])
     if plan.family == "moore":
         return generate_moore_points(kwargs["order"])
     if plan.family == "peano":
@@ -190,6 +205,26 @@ def build_segments(
     return "".join(chunks)
 
 
+def build_route_points(plan: RoutePlan) -> list[tuple[float, float]]:
+    curve = map_points(
+        curve_points(plan),
+        start=plan.band_start,
+        end=plan.band_end,
+        spread=plan.spread_mm,
+    )
+    return [
+        plan.start,
+        (plan.left_lane_x, plan.start[1]),
+        (plan.left_lane_x, plan.band_start[1]),
+        plan.band_start,
+        *curve[1:-1],
+        plan.band_end,
+        (plan.right_lane_x, plan.band_end[1]),
+        (plan.right_lane_x, plan.end[1]),
+        plan.end,
+    ]
+
+
 def _node_float_pair(node: List, name: str) -> tuple[float, float]:
     child = node.find(name)
     if child is None or len(child.atoms) < 3:
@@ -244,24 +279,31 @@ def _remove_target_segments(board: List, net_ids: dict[str, int]) -> dict[str, f
     widths: dict[str, float] = {}
     for plan in ROUTE_PLANS:
         net_id = net_ids[plan.net_name]
-        match = None
+        removed_any = False
         for child in list(board.children):
             if not isinstance(child, List) or child.head != "segment":
                 continue
             net_atom = child.find("net")
             if net_atom is None or int(net_atom.atoms[1].text) != net_id:
                 continue
-            if _segment_matches(child, layer=plan.layer, start=plan.start, end=plan.end):
-                width_child = child.find("width")
-                widths[plan.net_name] = float(width_child.atoms[1].text)
-                match = child
-                break
-        if match is None:
-            raise ValueError(
-                f"failed to find target segment for {plan.net_name} on {plan.layer} "
-                f"from {plan.start} to {plan.end}"
+            if _node_text(child, "layer") != plan.layer:
+                continue
+            segment_start = _node_float_pair(child, "start")
+            segment_end = _node_float_pair(child, "end")
+            preserved = any(
+                _points_close(segment_start, keep_start) and _points_close(segment_end, keep_end)
+                or _points_close(segment_start, keep_end) and _points_close(segment_end, keep_start)
+                for keep_start, keep_end in plan.preserve_segments
             )
-        board.remove_child(match)
+            if preserved:
+                continue
+            width_child = child.find("width")
+            widths[plan.net_name] = float(width_child.atoms[1].text)
+            board.remove_child(child)
+            removed_any = True
+        if not removed_any and plan.preserve_segments:
+            raise ValueError(f"failed to find removable routed segments for {plan.net_name}")
+        widths.setdefault(plan.net_name, plan.width_mm)
     return widths
 
 
@@ -282,12 +324,7 @@ def rewrite_board(input_path: Path, output_path: Path) -> list[tuple[str, str]]:
     generated_blocks = []
     summary = []
     for plan in ROUTE_PLANS:
-        mapped = map_points(
-            curve_points(plan),
-            start=plan.start,
-            end=plan.end,
-            spread=plan.spread_mm,
-        )
+        mapped = build_route_points(plan)
         net_id = net_ids[plan.net_name]
         generated_blocks.append(
             build_segments(

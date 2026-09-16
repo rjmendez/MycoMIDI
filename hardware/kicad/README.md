@@ -203,37 +203,35 @@ The repository also includes `hardware/kicad/fractal_fill.py`, which places
 decorative dead-space fill on the real ADS131M08 board while staying on the
 board's actual `GND` net.
 
-Run it in-place on the checked-in routed board inside the KiCad container
-(with `shapely` installed into that container first):
+Run it in-place on the checked-in routed board:
 
 ```bash
-docker run --rm -u $(id -u):$(id -g) -v "$PWD:/work" -w /work \
-  kicad/kicad:9.0 \
-  sh -lc 'python3 -m pip install --quiet shapely && python3 hardware/kicad/fractal_fill.py \
-    --profile adc-board-gnd \
-    --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
-    --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb'
+python3 hardware/kicad/fractal_fill.py \
+  --profile adc-board-gnd \
+  --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
 ```
 
-The real-board profile now:
+The real-board profile:
 
-- reads the real `Edge.Cuts` outline through `pcbnew` and insets it to define a
-  true full-board interior polygon
-- unions real obstacles with `shapely`: exact pad polygons, routed track/via
-  copper, and each footprint courtyard (falling back to body bounds only if a
-  courtyard is missing)
-- generates a continuous whole-board texture from two overlaid buffered
-  space-filling ribbons produced by `curves/selfavoiding_maze_path.py`
-- subtracts the obstacle union from that continuous texture, so the decorative
-  `GND` copper gets real cutouts around the placed board geometry instead of
-  being stamped into a few pre-detected rectangles
-- replaces the old `adc-fractal-fill-region-*` / `adc-fractal-fill-corridor-*`
-  sticker zones with one new front-copper `GND` zone object carrying multiple
-  polygon outlines/holes as needed
-- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean;
-  inspect the pattern in the exported copper-layer SVG render
-- refills the zone with `pcbnew` immediately, baking fresh `filled_polygon`
-  data back into the checked-in `.kicad_pcb` file
+- parses the actual board `Edge.Cuts` loop and scans the real board interior
+  instead of using three hardcoded decorative rectangles
+- builds obstacle bounds from existing pads, routed tracks, vias, footprint
+  extents, and silkscreen/text so the fill follows the routed board geometry
+- merges free grid cells into rectangular regions, then reshapes the usable
+  exposed-copper regions with closed Koch-derived boundaries instead of leaving
+  them as plain rectangles
+- confirms the routed board already defines `GND` in the KiCad net table and
+  uses that real net id for every decorative copper zone/corridor
+- emits the real-board copper as solid exposed front-layer `GND` zones whose
+  full outer silhouettes are fractalized, rather than as sparse decorative
+  trace skeletons or rectangles with a single notched edge
+- routes the copper variants only from existing `GND` anchors, so every new
+  copper object remains a `GND`-to-`GND` addition
+- when `pcbnew` is available, immediately refills those zones and saves the
+  computed `filled_polygon` data back into the board file
+- keeps the visible exposed copper and the hidden connector corridors
+  electrically safe because both only connect `GND` to `GND`
 
 ### Current status
 
@@ -254,9 +252,10 @@ The real-board profile now:
 
 ### Fractal signal rerouting on the real ADC board
 
-`hardware/kicad/fractal_signal_router.py` surgically replaces a small verified
-subset of the plain Freerouting analog segments with procedural meanders on the
-real `adc_board_8ch.kicad_pcb`.
+`hardware/kicad/fractal_signal_router.py` now applies the **second visual pass**
+on the real `adc_board_8ch.kicad_pcb`: it preserves the earlier verified
+lightweight reroutes on `AIN0N`, `AIN1P`, and `AIN2P`, then amplifies the lower
+`AIN3P` and `AIN5P` routes into much more visually obvious procedural detours.
 
 Run it after the clean autoroute, then re-run DRC:
 
@@ -272,14 +271,15 @@ python3 hardware/kicad/fractal_signal_router.py \
   hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
 ```
 
-This pass intentionally stays narrow:
+The checked-in branch now contains five procedurally rerouted AIN nets:
 
-- rerouted nets: `AIN0N`, `AIN1P`, `AIN2P`, `AIN5P`
+- inherited light reroutes: `AIN0N`, `AIN1P`, `AIN2P`
+- stronger visual-pass reroutes: `AIN3P`, `AIN5P`
 - untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
   `DOUT`, `AVDD`, `DVDD`, `REFP`, and the remaining AIN nets
-- no GND-zone regeneration or decorative-fill edits; the script only removes
-  four specific signal `segment` records and appends replacement `segment`
-  chains for those same net ids
+- no GND-zone regeneration or decorative-fill edits; the visual-pass script
+  only swaps the targeted lower-net `B.Cu` routing while leaving the timing
+  bundle and existing GND art untouched
 
 See `hardware/kicad/fractal-signal-routing-notes.md` for the exact net/family
 mapping and the verification method beyond plain DRC.

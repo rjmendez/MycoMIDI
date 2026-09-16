@@ -45,34 +45,39 @@ near decoupling/current-return behavior.
 
 ## Nets rerouted procedurally
 
-Only four AIN nets were changed in the checked-in board, because that subset
-was the largest one proven clean without disturbing the existing GND art or the
-timing-sensitive routes.
+Five AIN nets are procedurally rerouted in the checked-in branch. Three
+upper/mid nets (`AIN0N`, `AIN1P`, `AIN2P`) keep the earlier lightweight
+in-corridor perturbations. This visual pass then specifically strengthens the
+two lower nets (`AIN3P`, `AIN5P`) with more obvious detours into open `B.Cu`
+area so the bottom-side render reads as maze/fractal routing instead of a
+barely perturbed diagonal.
 
 | Net | Original long segment replaced | Layer | Curve family | Parameters |
 | --- | --- | --- | --- | --- |
-| `AIN0N` | `(15.531, 12.0) -> (42.1075, 38.5765)` | `B.Cu` | self-avoiding maze | `5x3`, `seed=7`, `spread=0.55 mm` |
-| `AIN1P` | `(14.728, 13.3655) -> (40.4106, 39.0481)` | `B.Cu` | Peano | `order=1`, `spread=-0.55 mm` |
-| `AIN2P` | `(14.5129, 15.8754) -> (39.0382, 40.4007)` | `B.Cu` | Sierpinski arrowhead | `order=3`, `spread=0.45 mm` |
-| `AIN5P` | `(13.3183, 28.3917) -> (31.5023, 46.5757)` | `B.Cu` | Gosper | `order=1`, `spread=-0.9 mm` |
+| `AIN0N` | `(15.531, 12.0) -> (42.1075, 38.5765)` | `B.Cu` | self-avoiding maze | direct-endpoint mapping, `5x3`, `seed=7`, `spread=0.55 mm` |
+| `AIN1P` | `(14.728, 13.3655) -> (40.4106, 39.0481)` | `B.Cu` | Peano | direct-endpoint mapping, `order=1`, `spread=-0.55 mm` |
+| `AIN2P` | `(14.5129, 15.8754) -> (39.0382, 40.4007)` | `B.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=3`, `spread=0.45 mm` |
+| `AIN3P` | `(13.4683, 23.3117) -> (35.8618, 45.7052)` | `B.Cu` | Gosper | staged detour via `(18.0,46.0) -> (30.0,46.0)`, `order=2`, `spread=2.6 mm` |
+| `AIN5P` | `(13.3183, 28.3917) -> (31.5023, 46.5757)` | `B.Cu` | self-avoiding maze | staged detour via `(18.0,60.5) -> (28.5,60.5)`, `8x4`, `seed=21`, `spread=1.8 mm` |
 
 The script leaves each net's short pad-entry / chip-fanout segments alone and
-only swaps the long middle run, which preserves the proven endpoint geometry.
+only swaps the long middle run. For the two stronger lower-net detours it uses
+short lane/corridor segments to enter and exit the curve window, which keeps
+the real net endpoints identical while making the visible route materially less
+direct.
 
 ## How the script works
 
 `hardware/kicad/fractal_signal_router.py`:
 
 1. parses the KiCad board using the repo's byte-preserving CST helper
-2. finds four exact existing `segment` records by:
-   - net name
-   - layer
-   - start/end coordinates
-3. removes only those four original straight-ish segments
-4. generates a replacement polyline for each net from a different curve family
-5. maps the curve onto the original segment baseline while forcing the first
-   and last generated points back onto the exact original segment endpoints
-6. appends the replacement KiCad `segment` chain for the same net id
+2. identifies the already-rerouted current-branch lower nets by net name and
+   removes only the replaceable `B.Cu` segments, while preserving the short
+   header/chip stubs that already proved clean
+3. generates stronger replacement polylines for:
+   - `AIN3P` via a Gosper window
+   - `AIN5P` via a self-avoiding maze window
+4. appends the replacement KiCad `segment` chains for the same net ids
 
 Because it is text-surgical rather than a full pcbnew save, untouched areas of
 the board — especially the GND fill zones — are not regenerated or normalized.
@@ -97,10 +102,11 @@ Verification was intentionally broader than "DRC passes":
    - this proves the reroute did not relabel pads onto the wrong net
 
 3. **Changed-net scope check**
-   - diff the board's copper items by net name
-   - expected result: only `AIN0N`, `AIN1P`, `AIN2P`, and `AIN5P` changed;
-     `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`, `DOUT`, `AVDD`,
-     `DVDD`, `REFP`, and all zone objects stayed untouched
+   - diff the board's copper items by net name against the previous branch head
+   - expected result for this visual pass: only `AIN3P` and `AIN5P` change;
+     the earlier `AIN0N` / `AIN1P` / `AIN2P` procedural routes remain as-is,
+     and `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`, `DOUT`, `AVDD`,
+     `DVDD`, `REFP`, and all zone objects stay untouched
 
 4. **GND-fill integrity check**
    - compare the extracted top-level `(zone ...)` blocks before/after
@@ -116,7 +122,8 @@ Verification was intentionally broader than "DRC passes":
 
 ## Honest limit
 
-This is deliberately **not** all 16 AIN nets. Several larger attempts produced
-clearance, edge, or GND-art collisions. The checked-in subset is the narrow
-slice that stayed electrically clean and verifiable in the current layout
-without rewriting the whole board again.
+This is deliberately **not** all 16 AIN nets. Larger attempts to push the upper
+and mid-band AIN traces into equally dramatic detours produced clearance,
+crossing, or GND-art-adjacent collisions. The checked-in branch therefore keeps
+the lighter upper reroutes and spends the extra visual chaos budget on the two
+lower nets where the open area could absorb it cleanly.
