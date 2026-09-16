@@ -218,12 +218,14 @@ The real-board profile:
   instead of using three hardcoded decorative rectangles
 - builds obstacle bounds from existing pads, routed tracks, vias, footprint
   extents, and silkscreen/text so the fill follows the routed board geometry
-- merges free grid cells into rectangular regions, then tiles varied fractal
-  families (`moore`, `peano`, `hilbert`) across those detected regions
+- merges free grid cells into rectangular regions, then reshapes the usable
+  exposed-copper regions with closed Koch-derived boundaries instead of leaving
+  them as plain rectangles
 - confirms the routed board already defines `GND` in the KiCad net table and
   uses that real net id for every decorative copper zone/corridor
 - emits the real-board copper as solid exposed front-layer `GND` zones whose
-  boundaries are fractalized, rather than as sparse decorative trace skeletons
+  full outer silhouettes are fractalized, rather than as sparse decorative
+  trace skeletons or rectangles with a single notched edge
 - routes the copper variants only from existing `GND` anchors, so every new
   copper object remains a `GND`-to-`GND` addition
 - when `pcbnew` is available, immediately refills those zones and saves the
@@ -241,7 +243,8 @@ The real-board profile:
   produces a clean DRC on this board.
 - The real ADS131M08 board now carries decorative multi-curve exposed copper on
   `F.Cu`; the visible art is tied to the existing `GND` net, not isolated on
-  dummy art-only nets.
+  dummy art-only nets. The current visible boundary families are Koch-derived
+  closed polygons at modest orders chosen to keep KiCad zone filling reliable.
 - The checked-in C5 reference position is offset to keep the exposed copper
   clear and preserve a zero-violation DRC.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the

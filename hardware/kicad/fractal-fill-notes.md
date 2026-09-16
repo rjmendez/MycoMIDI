@@ -48,9 +48,10 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
    same clearance model as the decorative fill (`0.25 mm` local clearance,
    `0.35 mm` free-space scan clearance for the visible copper regions)
 4. greedily merges contiguous free cells into candidate rectangles
-5. tiles repeated curve instances across each useful rectangle, rotating the
-   selected family per region (`moore`, `peano`, `hilbert` at present)
-   instead of placing one fixed-size fractal in each area
+5. uses those rectangles only as *hosting windows*, then maps a closed
+   Koch-derived boundary polygon into each one so the *entire* exposed copper
+   perimeter reads as a jagged/fractal silhouette instead of a rectangle with
+   one decorative bite taken out of it
 6. routes the real-board copper variants only from anchor points already on the
    real `GND` network, then emits solid front-layer `GND` zones (plus short
    masked `GND` connector corridors where needed)
@@ -104,8 +105,14 @@ Earlier renders looked wrong for two reasons:
   boundary perturbation, so it read like a plain rectangle
 
 The current real-board output instead exposes multiple front-layer GND regions,
-uses inward-facing fractal edges so the shape reads in the render, and bakes the
-zone fill before saving.
+uses closed Koch-derived silhouettes at modest order (`koch-anti` order 2,
+`koch-anti-lite` order 1, and `koch-classic` order 1), and bakes the zone fill
+before saving.
+
+Those order caps are deliberate: higher orders do look more intricate, but they
+also create much narrower necks and more chances for KiCad's zone filler to
+drop disconnected slivers or for DRC to flag isolated copper in the thinner
+side-strip regions.
 
 ## Honest caveats
 

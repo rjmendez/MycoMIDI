@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from fractal_geometry import format_mm, generate_hilbert_points, generate_moore_points, generate_peano_points
+from curves.koch_snowflake_curve import koch_snowflake_points
+from fractal_geometry import format_mm
 
 DEFAULT_INPUT = Path("hardware/kicad/demo/demo.kicad_pcb")
 DEFAULT_OUTPUT = Path("hardware/kicad/demo/fractal_fill_demo.kicad_pcb")
@@ -37,7 +38,7 @@ ADC_MAX_COPPER_CONNECTOR_MM = 60.0
 ADC_SILK_TILE_MARGIN_MM = 0.4
 ADC_COPPER_TILE_MARGIN_MM = 0.45
 ADC_MASK_OPENING_WIDTH_MM = 0.28
-ADC_REAL_BOARD_CURVES = ("moore", "peano", "hilbert")
+ADC_REAL_BOARD_CURVES = ("koch-anti", "koch-anti-lite", "koch-classic")
 ADC_BOUNDARY_SIDES = ("top", "left", "bottom", "right")
 ADC_COPPER_CONNECTOR_WIDTH_MM = 0.8
 ADC_GENERATED_ZONE_PREFIX = "adc-fractal-fill"
@@ -114,12 +115,12 @@ class RegionStats:
 
 
 def generate_curve_points(curve_name: str) -> list[tuple[float, float]]:
-    if curve_name == "hilbert":
-        return generate_hilbert_points(3)
-    if curve_name == "moore":
-        return generate_moore_points(2)
-    if curve_name == "peano":
-        return generate_peano_points(2)
+    if curve_name == "koch-anti":
+        return koch_snowflake_points(2, anti=True)
+    if curve_name == "koch-anti-lite":
+        return koch_snowflake_points(1, anti=True)
+    if curve_name == "koch-classic":
+        return koch_snowflake_points(1, anti=False)
     raise ValueError(f"unknown curve family {curve_name!r}")
 
 
@@ -161,6 +162,30 @@ def map_points_to_rect(
             v = 1.0 - v
         mapped.append((target.left + target.width * u, target.bottom + target.height * v))
     return mapped
+
+
+def transform_closed_curve_points(
+    points: list[tuple[float, float]],
+    *,
+    quarter_turns: int = 0,
+    mirror_x: bool = False,
+    mirror_y: bool = False,
+) -> list[tuple[float, float]]:
+    turns = quarter_turns % 4
+    transformed: list[tuple[float, float]] = []
+    for x, y in points:
+        if turns == 1:
+            x, y = 1.0 - y, x
+        elif turns == 2:
+            x, y = 1.0 - x, 1.0 - y
+        elif turns == 3:
+            x, y = y, 1.0 - x
+        if mirror_x:
+            x = 1.0 - x
+        if mirror_y:
+            y = 1.0 - y
+        transformed.append((x, y))
+    return transformed
 
 
 def build_graphic_lines(points: list[tuple[float, float]], *, width: float, layer: str) -> str:
@@ -973,32 +998,17 @@ def zone_entry_targets(rect: Rect) -> list[tuple[float, float]]:
 
 
 def fractal_zone_outline(rect: Rect, curve_points: list[tuple[float, float]], *, side: str, margin: float) -> list[tuple[float, float]]:
-    band_depth = min(max(2.0, min(rect.width, rect.height) * 0.34), max(2.0, min(rect.width, rect.height) - (2.0 * margin)))
-    if side == "top":
-        band = Rect(rect.left, rect.top - band_depth, rect.right, rect.top)
-        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=False, mirror_y=False)
-        if path[0][0] < path[-1][0]:
-            path.reverse()
-        return [(rect.left, rect.bottom), (rect.right, rect.bottom), (rect.right, rect.top), *path, (rect.left, rect.top)]
-    if side == "bottom":
-        band = Rect(rect.left, rect.bottom, rect.right, rect.bottom + band_depth)
-        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=False, mirror_y=True)
-        if path[0][0] > path[-1][0]:
-            path.reverse()
-        return [(rect.left, rect.bottom), *path, (rect.right, rect.bottom), (rect.right, rect.top), (rect.left, rect.top)]
-    if side == "left":
-        band = Rect(rect.left, rect.bottom, rect.left + band_depth, rect.top)
-        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=False, mirror_y=False)
-        if path[0][1] < path[-1][1]:
-            path.reverse()
-        return [(rect.left, rect.bottom), (rect.right, rect.bottom), (rect.right, rect.top), (rect.left, rect.top), *path]
-    if side == "right":
-        band = Rect(rect.right - band_depth, rect.bottom, rect.right, rect.top)
-        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=True, mirror_y=False)
-        if path[0][1] > path[-1][1]:
-            path.reverse()
-        return [(rect.left, rect.bottom), (rect.right, rect.bottom), *path, (rect.right, rect.top), (rect.left, rect.top)]
-    raise ValueError(f"unknown boundary side {side!r}")
+    quarter_turns = {"top": 0, "right": 1, "bottom": 2, "left": 3}.get(side, 0)
+    transformed = transform_closed_curve_points(
+        curve_points,
+        quarter_turns=quarter_turns,
+        mirror_x=side in {"bottom", "left"},
+        mirror_y=side in {"right", "bottom"},
+    )
+    outline = map_points_to_rect(transformed, rect, margin=margin)
+    if outline and math.isclose(outline[0][0], outline[-1][0]) and math.isclose(outline[0][1], outline[-1][1]):
+        outline = outline[:-1]
+    return outline
 
 
 def choose_boundary_side(rect: Rect, board_rect: Rect, index: int) -> str:
@@ -1043,6 +1053,23 @@ def corridor_zone_polygons(path: list[tuple[float, float]], *, width: float) -> 
         else:
             raise ValueError("connector corridor only supports orthogonal paths")
     return polygons
+
+
+def extend_path_to_region_center(path: list[tuple[float, float]], rect: Rect) -> list[tuple[float, float]]:
+    if not path:
+        raise ValueError("connector path cannot be empty")
+    center = rect_center(rect)
+    end = path[-1]
+    if math.isclose(end[0], center[0]) or math.isclose(end[1], center[1]):
+        return path + [center]
+
+    via_a = (end[0], center[1])
+    via_b = (center[0], end[1])
+    if rect.contains_point(via_a):
+        return path + [via_a, center]
+    if rect.contains_point(via_b):
+        return path + [via_b, center]
+    return path + [center]
 
 
 def connector_candidates(anchor: tuple[float, float], target: tuple[float, float]) -> list[list[tuple[float, float]]]:
@@ -1320,7 +1347,7 @@ def build_adc_board_blocks(
         curve_points = generate_curve_points(plan.curve_name)
         zone_rect = plan.rect.inset(ADC_EXPOSED_REGION_INSET_MM)
         zone_polygon = fractal_zone_outline(zone_rect, curve_points, side=plan.boundary_side, margin=ADC_COPPER_TILE_MARGIN_MM)
-        corridor_polygons = corridor_zone_polygons(plan.path, width=ADC_COPPER_CONNECTOR_WIDTH_MM)
+        corridor_polygons = corridor_zone_polygons(extend_path_to_region_center(plan.path, zone_rect), width=ADC_COPPER_CONNECTOR_WIDTH_MM)
         blocks.append(
             build_zone(
                 zone_polygon,
@@ -1358,7 +1385,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Write a KiCad board copy with decorative fractal fill. "
-            "The demo profile uses isolated Hilbert art nets; the adc-board-gnd profile mixes multiple curve families on real GND."
+            "The demo profile uses isolated Hilbert art nets; the adc-board-gnd profile emits closed Koch-derived GND zones."
         ),
     )
     parser.add_argument("--profile", choices=("demo", "adc-board-gnd"), default="demo", help="Board profile to decorate.")
