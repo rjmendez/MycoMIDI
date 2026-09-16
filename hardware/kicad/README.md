@@ -70,3 +70,48 @@ KiCad assets, and those assets are now tracked here for the hardware design.
 
 They are candidates for 4-channel, 8-channel, and 16-channel electrode
 connector breakouts as the ADS131M08 hardware scales beyond the first module.
+
+## SKiDL netlist generators
+
+This directory also includes inline SKiDL scripts for electrode-side schematic
+generation without requiring KiCad symbol libraries:
+
+- `generate_channel.py`: one-channel proof of concept
+- `generate_board.py`: 8-channel electrode-board base schematic
+
+Both follow the documented ADS131M08 input semantics from
+`hardware/adc-module.md` and the connector conventions from
+`hardware/pin-board.md`:
+
+- recording electrode -> `AINxP`
+- reference electrode -> `AINxN`
+- never wire an electrode to the ADC `REFIN`/`REFOUT` reference pins
+
+### Setup
+
+From the repo root:
+
+```bash
+python3 -m venv hardware/kicad/.venv
+. hardware/kicad/.venv/bin/activate
+pip install skidl kiutils kicad-skip
+python -c "import skidl, kiutils, skip"
+```
+
+### Run
+
+```bash
+. hardware/kicad/.venv/bin/activate
+python hardware/kicad/generate_channel.py
+python hardware/kicad/generate_board.py
+```
+
+### Outputs
+
+- `hardware/kicad/single_channel_prototype.net`
+- `hardware/kicad/electrode_board_8ch.net`
+
+`generate_board.py` maps all eight `AINxP/AINxN` differential pairs to one
+16-pin `CONN_02X08`-style header footprint and leaves the future driven-ground
+/ bias path as a clearly labeled `BIAS_DRIVE_TODO` placeholder net stubbed to
+`TP1`.
