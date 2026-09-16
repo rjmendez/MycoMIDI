@@ -1,3 +1,13 @@
+"""
+LEGACY ADS1256 support module.
+
+This driver is kept for the older root-level live pipeline and is specific to
+the single-device ADS1256 ADC path used by mycomidi.py/config.py. Current
+MycoMIDI development targets the ADS131M08-based hardware documented in
+hardware/adc-module.md and hardware/pin-board.md and uses
+tools/logger.py -> tools/tokenizer.py -> tools/musicgen.py instead.
+"""
+
 import config
 import RPi.GPIO as GPIO
 
@@ -204,4 +214,3 @@ class ADS1256:
             ADC_Value[i] = self.ADS1256_GetChannalValue(i)
         return ADC_Value
 ### END OF FILE ###
-
