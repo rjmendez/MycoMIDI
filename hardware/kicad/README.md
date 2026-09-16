@@ -64,7 +64,10 @@ The repository now includes a real ADS131M08-based 8-channel board flow:
 ### Pinout note
 
 `generate_board.py` uses the ADS131M08 TQFP-32 pin numbers from TI datasheet
-SBAS950B Rev. B, Table 5-1. The actual package exposes `REFIN` and `CAP`
+SBAS950B Rev. B, cross-checked against the Figure 5-1 top-view pin diagram as
+well as Table 5-1. The actual package is a real four-side TQFP-32 footprint
+(`Package_QFP:TQFP-32_7x7mm_P0.8mm`), not a two-row/DIP-style abstraction. It
+exposes `REFIN` and `CAP`
 (not separate `REFP` / `REFN` pins), so the SKiDL netlist uses a readability
 alias where `REFP` lands on `REFIN` and the return side is the common ground
 node.
@@ -128,5 +131,7 @@ handwritten point-to-point router:
 - The previous handwritten routing pass created many same-layer crossings and
   shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
   produces a clean DRC on this board.
+- C5/C6 silkscreen reference labels are placed explicitly in the generator so
+  they stay readable and off the capacitor pads/traces after autorouting.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
   checked-in `adc_board_8ch.kicad_pcb`.

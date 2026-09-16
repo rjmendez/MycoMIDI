@@ -12,7 +12,8 @@ SINGLE_CHANNEL_NETLIST = KICAD_ROOT / "single_channel_prototype.net"
 ADC_BOARD_NETLIST = ADC_BOARD_DIR / "adc_board_8ch.net"
 ADC_BOARD_PCB = ADC_BOARD_DIR / "adc_board_8ch.kicad_pcb"
 
-# ADS131M08 TQFP-32 pinout from TI datasheet SBAS950B Rev. B, Table 5-1.
+# ADS131M08 TQFP-32 pinout from TI datasheet SBAS950B Rev. B,
+# cross-checked against Figure 5-1 (32-pin TQFP top view) and Table 5-1.
 ADS131M08_PIN_DEFS: list[tuple[str, str, object]] = [
     ("1", "AIN2P", pin_types.INPUT),
     ("2", "AIN2N", pin_types.INPUT),

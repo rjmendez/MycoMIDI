@@ -39,7 +39,7 @@ def main() -> None:
 
     output_path = write_netlist(ADC_BOARD_NETLIST)
     print(f"Wrote {output_path}")
-    print("8-channel board netlist uses one real ADS131M08 TQFP-32 with exact Table 5-1 pin numbers.")
+    print("8-channel board netlist uses one real ADS131M08 TQFP-32 with four-side pin ordering cross-checked to datasheet Figure 5-1 and Table 5-1.")
     print("Electrode header maps CHx_REC -> AINxP and CHx_REF -> AINxN for channels 0..7.")
     print("Support wiring includes SPI, CLKIN, SYNC_RESET, AVDD/DVDD bulk+bypass caps, REFIN cap, and CAP LDO cap.")
     print("REFP net aliases the ADS131M08 REFIN pin; the return side is the common GND node.")

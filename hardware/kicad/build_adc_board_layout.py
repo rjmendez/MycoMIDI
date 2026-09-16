@@ -188,6 +188,18 @@ def place_components(
         footprints[ref] = footprint
     return footprints
 
+
+def position_reference_labels(footprints: dict[str, pcbnew.FOOTPRINT]) -> None:
+    label_positions = {
+        "C5": Placement(64.0, 49.5, 0.0),
+        "C6": Placement(64.0, 38.5, 0.0),
+    }
+    for ref, placement in label_positions.items():
+        label = footprints[ref].Reference()
+        label.SetPosition(point(placement.x_mm, placement.y_mm))
+        label.SetTextAngleDegrees(placement.rotation_deg)
+
+
 def annotate_board(board: pcbnew.BOARD) -> None:
     return None
 
@@ -199,7 +211,8 @@ def build_board(netlist_path: Path, output_path: Path, dsn_output_path: Path | N
     board = pcbnew.BOARD()
     add_outline(board)
     nets = create_nets(board, netlist.net_names)
-    place_components(board, netlist, nets)
+    footprints = place_components(board, netlist, nets)
+    position_reference_labels(footprints)
     annotate_board(board)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pcbnew.SaveBoard(str(output_path), board)
