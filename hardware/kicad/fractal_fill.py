@@ -4,6 +4,7 @@ import argparse
 import math
 import re
 import uuid
+from importlib import import_module
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -234,16 +235,19 @@ def build_zone(
     clearance: float,
     min_thickness: float,
     priority: int | None = None,
+    name: str | None = None,
 ) -> str:
     if len(polygon_points) < 3:
         raise ValueError("zone polygon needs at least 3 points")
     pts = "\n".join(f"\t\t\t\t(xy {format_mm(x)} {format_mm(y)})" for x, y in polygon_points)
     priority_block = f"\t\t(priority {priority})\n" if priority is not None else ""
+    name_block = f'\t\t(name "{name}")\n' if name else ""
     return (
         "\t(zone\n"
         f"\t\t(net {net_id})\n"
         f'\t\t(net_name "{net_name}")\n'
         f'\t\t(layer "{layer}")\n'
+        f"{name_block}"
         f'\t\t(uuid "{uuid.uuid4()}")\n'
         "\t\t(hatch edge 0.5)\n"
         f"{priority_block}"
@@ -1296,7 +1300,7 @@ def build_adc_board_blocks(
         blocks.append(build_graphic_lines(front, width=silk_width, layer="F.SilkS"))
         blocks.append(build_graphic_lines(back, width=silk_width, layer="B.SilkS"))
 
-    for plan in stats.copper_regions:
+    for plan_index, plan in enumerate(stats.copper_regions):
         curve_points = generate_curve_points(plan.curve_name)
         zone_polygon = fractal_zone_outline(plan.rect, curve_points, side=plan.boundary_side, margin=ADC_COPPER_TILE_MARGIN_MM)
         corridor_polygons = corridor_zone_polygons(plan.path, width=ADC_COPPER_CONNECTOR_WIDTH_MM)
@@ -1309,6 +1313,7 @@ def build_adc_board_blocks(
                 clearance=ADC_CLEARANCE_MM,
                 min_thickness=copper_width,
                 priority=zone_priority,
+                name=f"adc-fractal-fill-region-{plan_index}-front",
             )
         )
         zone_priority += 1
@@ -1321,10 +1326,11 @@ def build_adc_board_blocks(
                 clearance=ADC_CLEARANCE_MM,
                 min_thickness=copper_width,
                 priority=zone_priority,
+                name=f"adc-fractal-fill-region-{plan_index}-back",
             )
         )
         zone_priority += 1
-        for corridor_polygon in corridor_polygons:
+        for corridor_index, corridor_polygon in enumerate(corridor_polygons):
             blocks.append(
                 build_zone(
                     corridor_polygon,
@@ -1334,6 +1340,7 @@ def build_adc_board_blocks(
                     clearance=ADC_CLEARANCE_MM,
                     min_thickness=copper_width,
                     priority=zone_priority,
+                    name=f"adc-fractal-fill-corridor-{plan_index}-{corridor_index}-front",
                 )
             )
             zone_priority += 1
@@ -1346,6 +1353,7 @@ def build_adc_board_blocks(
                     clearance=ADC_CLEARANCE_MM,
                     min_thickness=copper_width,
                     priority=zone_priority,
+                    name=f"adc-fractal-fill-corridor-{plan_index}-{corridor_index}-back",
                 )
             )
             zone_priority += 1
@@ -1379,6 +1387,32 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--via-size", type=float, default=0.6, help="Through-via diameter in mm for top/bottom continuity.")
     parser.add_argument("--via-drill", type=float, default=0.3, help="Through-via drill in mm for top/bottom continuity.")
     return parser
+
+
+def refill_zones_with_pcbnew(board_path: Path) -> bool:
+    try:
+        pcbnew = import_module("pcbnew")
+    except ModuleNotFoundError:
+        return False
+
+    board = pcbnew.LoadBoard(str(board_path))
+    zones = board.Zones()
+    if len(zones) == 0:
+        return True
+    filler = pcbnew.ZONE_FILLER(board)
+    filler.Fill(zones)
+    stale_zones = []
+    for index in range(board.GetAreaCount()):
+        zone = board.GetArea(index)
+        if not zone.GetZoneName().startswith("adc-fractal-fill"):
+            continue
+        if zone.GetFilledPolysList(zone.GetLayer()).OutlineCount() > 0:
+            continue
+        stale_zones.append(zone)
+    for zone in stale_zones:
+        board.RemoveNative(zone)
+    pcbnew.SaveBoard(str(board_path), board)
+    return True
 
 
 def main() -> int:
@@ -1428,6 +1462,11 @@ def main() -> int:
         output_text = output_text.replace("\n", "\r\n")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(output_text, encoding="utf-8")
+    if args.profile == "adc-board-gnd":
+        if refill_zones_with_pcbnew(args.output):
+            print(f"refilled copper zones with pcbnew: {args.output}")
+        else:
+            print("warning: pcbnew unavailable; zone outlines were written but filled polygons were not baked into the board file")
     print(
         f"wrote {args.output} with profile={args.profile}, "
         f"copper_width={args.copper_width}, silk_width={args.silk_width}, mask_width={args.mask_width}"

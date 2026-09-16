@@ -226,6 +226,8 @@ The real-board profile:
   fractalized, rather than as sparse decorative trace skeletons
 - routes the copper variants only from existing `GND` anchors, so every new
   copper object remains a `GND`-to-`GND` addition
+- when `pcbnew` is available, immediately refills those zones and saves the
+  computed `filled_polygon` data back into the board file
 - leaves the masked/tented and exposed/unmasked copper variants electrically
   safe because both only connect `GND` to `GND`
 

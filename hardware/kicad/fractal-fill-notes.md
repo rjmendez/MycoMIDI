@@ -54,6 +54,9 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
 6. routes the real-board copper variants only from anchor points already on the
    real `GND` network, then emits solid `GND` zones (plus short `GND` zone
    connector corridors where needed) on both copper layers
+7. if `pcbnew` is available, immediately runs KiCad's zone filler and saves the
+   resulting `filled_polygon` data back into the `.kicad_pcb` file so renders
+   and diffs show actual solid copper rather than hollow zone outlines
 
 The result is still approximate rather than polygon-perfect: the free-space
 detector is grid/rectangle based, not a general polygon boolean engine. But it
@@ -90,6 +93,11 @@ like ordinary poured copper inside the detected free-space rectangle.
 Where a free-space island does not already touch an existing GND feature, the
 script adds a short solid zone corridor back to an existing GND anchor so the
 fill stays electrically continuous.
+
+The large colored block near the bottom-right render is not a stray rectangle:
+it is the intentionally exposed/unmasked copper-fill variant. In composite SVG
+exports that include mask layers, the corresponding mask opening can look like a
+solid tinted panel unless the copper fill has also been baked into the board.
 
 ## Honest caveats
 
