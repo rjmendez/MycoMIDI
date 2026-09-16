@@ -27,6 +27,11 @@
 # THE SOFTWARE.
 #
 
+# LEGACY: GPIO/SPI glue for the older ADS1256-specific root pipeline
+# (mycomidi.py + ADS1256.py). It is retained for reference/compatibility, but
+# current MycoMIDI work targets the ADS131M08-based hardware described in
+# hardware/adc-module.md and hardware/pin-board.md and flows through
+# tools/logger.py -> tools/tokenizer.py -> tools/musicgen.py instead.
 
 import spidev
 import RPi.GPIO as GPIO
