@@ -56,3 +56,17 @@ the repo root unless you pass `--output` or use `--workdir hardware/kicad/demo`.
   mounted tree.
 - Generated report files follow KiCad CLI behavior and default to the mounted
   working directory rather than the source file's directory.
+
+## Generated electrode footprints
+
+`hardware/kicad/footprints/` now contains generated 1x04, 1x08, and 1x16
+through-hole connector footprints for candidate electrode headers.
+
+These files were generated with
+[`generate_pin_header_footprint`](https://github.com/rjmendez/kicad-mcp-tools)
+from `kicad-mcp-tools`, then copied back into MycoMIDI as a real dogfooding
+loop: MycoMIDI requirements informed the tool, the tool produced reusable
+KiCad assets, and those assets are now tracked here for the hardware design.
+
+They are candidates for 4-channel, 8-channel, and 16-channel electrode
+connector breakouts as the ADS131M08 hardware scales beyond the first module.
