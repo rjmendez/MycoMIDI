@@ -1,6 +1,12 @@
 #!/usr/bin/python
 # -*- coding:utf-8 -*-
 
+# LEGACY: this root-level live pipeline targets the older ADS1256-based ADC
+# setup and assumes a single-device, direct sample-to-MIDI/MQTT flow.
+# Current MycoMIDI work targets the ADS131M08-based hardware documented in
+# hardware/adc-module.md and hardware/pin-board.md, and uses the offline tools
+# pipeline instead: tools/logger.py -> tools/tokenizer.py -> tools/musicgen.py.
+
 #import paho.mqtt.client as mqtt
 import paho.mqtt.publish as publish
 import ADS1256
