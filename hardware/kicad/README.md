@@ -230,8 +230,9 @@ The real-board profile:
 - replaces the old `adc-fractal-fill-region-*` / `adc-fractal-fill-corridor-*`
   sticker zones with one new front-copper `GND` zone object carrying multiple
   polygon outlines/holes as needed
-- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean;
-  inspect the pattern in the exported copper-layer SVG render
+- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean,
+  and now also places a matching top-silkscreen fractal/maze overlay in the
+  broad open areas so the rendered board still reads as visibly organic
 - refills the zone with `pcbnew` immediately, baking fresh `filled_polygon`
   data back into the checked-in `.kicad_pcb` file
 

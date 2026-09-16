@@ -24,6 +24,16 @@ TEXTURE_SPACING_X_MM = 10.4
 TEXTURE_SPACING_Y_MM = 9.0
 TEXTURE_LINE_WIDTH_MM = 0.5
 TEXTURE_EDGE_MARGIN_MM = 4.8
+SILK_TILE_MM = 5.8
+SILK_FINE_TILE_MM = 4.4
+SILK_SPACING_X_MM = 6.2
+SILK_SPACING_Y_MM = 5.4
+SILK_FINE_SPACING_X_MM = 4.8
+SILK_FINE_SPACING_Y_MM = 4.2
+SILK_LINE_WIDTH_MM = 0.18
+SILK_LINE_WIDTH_FINE_MM = 0.12
+SILK_EDGE_MARGIN_MM = 2.4
+SILK_OBSTACLE_CLEARANCE_MM = 0.55
 MIN_COMPONENT_AREA_MM2 = 3.0
 ARC_RESOLUTION = 6
 POLYGON_ERROR_MM = 0.02
@@ -71,6 +81,24 @@ def _iter_polygons(geometry) -> Iterable[Polygon]:
     raise TypeError(f"unsupported geometry type {geometry.geom_type}")
 
 
+def _iter_lines(geometry):
+    if geometry.is_empty:
+        return
+    if geometry.geom_type == "LineString":
+        yield geometry
+        return
+    if geometry.geom_type == "MultiLineString":
+        for item in geometry.geoms:
+            if not item.is_empty:
+                yield item
+        return
+    if isinstance(geometry, GeometryCollection):
+        for item in geometry.geoms:
+            yield from _iter_lines(item)
+        return
+    raise TypeError(f"unsupported line geometry type {geometry.geom_type}")
+
+
 def _shape_line_to_coords(chain: pcbnew.SHAPE_LINE_CHAIN) -> list[tuple[float, float]]:
     coords: list[tuple[float, float]] = []
     for index in range(chain.PointCount()):
@@ -112,14 +140,14 @@ def _chain_from_ring(coords: Iterable[tuple[float, float]]) -> pcbnew.SHAPE_LINE
     return chain
 
 
-def _polyset_from_shapely(geometry) -> pcbnew.SHAPE_POLY_SET:
+def _polyset_from_shapely(geometry, *, min_area_mm2: float = MIN_COMPONENT_AREA_MM2, min_hole_mm2: float = 0.05) -> pcbnew.SHAPE_POLY_SET:
     polyset = pcbnew.SHAPE_POLY_SET()
     for polygon in _iter_polygons(geometry):
-        if polygon.area < MIN_COMPONENT_AREA_MM2:
+        if polygon.area < min_area_mm2:
             continue
         outline_index = polyset.AddOutline(_chain_from_ring(polygon.exterior.coords))
         for hole in polygon.interiors:
-            if Polygon(hole.coords).area < 0.05:
+            if Polygon(hole.coords).area < min_hole_mm2:
                 continue
             polyset.AddHole(_chain_from_ring(hole.coords), outline_index)
     polyset.NormalizeAreaOutlines()
@@ -228,6 +256,19 @@ def _centered_points(points: Iterable[tuple[float, float]]) -> list[tuple[float,
     return [(x - 0.5, y - 0.5) for x, y in normalized]
 
 
+def _normalize_points(points: Iterable[tuple[float, float]]) -> list[tuple[float, float]]:
+    raw = list(points)
+    if not raw:
+        raise ValueError("curve point list cannot be empty")
+    min_x = min(x for x, _ in raw)
+    max_x = max(x for x, _ in raw)
+    min_y = min(y for _, y in raw)
+    max_y = max(y for _, y in raw)
+    span_x = max(max_x - min_x, 1e-6)
+    span_y = max(max_y - min_y, 1e-6)
+    return [((x - min_x) / span_x, (y - min_y) / span_y) for x, y in raw]
+
+
 def _line_motif(points: Iterable[tuple[float, float]], *, tile_mm: float, width_mm: float, rotation_deg: float):
     line = LineString(_centered_points(points))
     geometry = line.buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
@@ -243,6 +284,33 @@ def _filled_motif(points: Iterable[tuple[float, float]], *, tile_mm: float, rota
     if rotation_deg:
         geometry = affinity.rotate(geometry, rotation_deg, origin=(0.0, 0.0))
     return geometry
+
+
+def _ring_motif(points: Iterable[tuple[float, float]], *, tile_mm: float, width_mm: float, rotation_deg: float):
+    polygon = Polygon(_centered_points(points))
+    geometry = LineString(list(polygon.exterior.coords)).buffer(
+        width_mm / 2.0,
+        cap_style=1,
+        join_style=1,
+        resolution=ARC_RESOLUTION,
+    )
+    geometry = affinity.scale(geometry, xfact=tile_mm, yfact=tile_mm, origin=(0.0, 0.0))
+    if rotation_deg:
+        geometry = affinity.rotate(geometry, rotation_deg, origin=(0.0, 0.0))
+    return geometry
+
+
+def _cell_noise(row: int, column: int, salt: int) -> float:
+    value = ((row + 1) * 92_837) + ((column + 1) * 68_917) + (salt * 12_347)
+    return float(value % 1000) / 1000.0
+
+
+def _cell_rotation(row: int, column: int, salt: int, step_deg: float) -> float:
+    return step_deg * int(_cell_noise(row, column, salt) * (360.0 / step_deg))
+
+
+def _cell_scale(base_mm: float, row: int, column: int, salt: int, *, span: float = 0.22) -> float:
+    return base_mm * (1.0 - (span / 2.0) + (_cell_noise(row, column, salt) * span))
 
 
 def _motif_geometry(row: int, column: int):
@@ -286,6 +354,70 @@ def _motif_geometry(row: int, column: int):
     )
 
 
+def _silk_motif_geometry(row: int, column: int):
+    variant = ((row * 3) + (column * 5) + int(_cell_noise(row, column, 9) * 7.0)) % 8
+    if variant == 0:
+        return _ring_motif(
+            koch_snowflake_points(4, anti=True),
+            tile_mm=_cell_scale(SILK_TILE_MM, row, column, 1),
+            width_mm=SILK_LINE_WIDTH_MM,
+            rotation_deg=_cell_rotation(row, column, 2, 15.0),
+        )
+    if variant == 1:
+        return _line_motif(
+            gosper_curve_points(3),
+            tile_mm=_cell_scale(SILK_TILE_MM, row, column, 3),
+            width_mm=SILK_LINE_WIDTH_MM,
+            rotation_deg=_cell_rotation(row, column, 4, 10.0),
+        )
+    if variant == 2:
+        return _line_motif(
+            dragon_curve_points(9),
+            tile_mm=_cell_scale(SILK_TILE_MM * 0.96, row, column, 5),
+            width_mm=SILK_LINE_WIDTH_FINE_MM,
+            rotation_deg=_cell_rotation(row, column, 6, 7.5),
+        )
+    if variant == 3:
+        return _line_motif(
+            sierpinski_arrowhead_curve_points(6),
+            tile_mm=_cell_scale(SILK_TILE_MM * 0.94, row, column, 7),
+            width_mm=SILK_LINE_WIDTH_FINE_MM,
+            rotation_deg=_cell_rotation(row, column, 8, 10.0),
+        )
+    if variant == 4:
+        return _ring_motif(
+            koch_snowflake_points(4, anti=False),
+            tile_mm=_cell_scale(SILK_TILE_MM * 0.92, row, column, 10),
+            width_mm=SILK_LINE_WIDTH_MM * 0.92,
+            rotation_deg=_cell_rotation(row, column, 11, 10.0),
+        )
+    if variant == 5:
+        return _line_motif(
+            gosper_curve_points(3),
+            tile_mm=_cell_scale(SILK_FINE_TILE_MM * 1.08, row, column, 12),
+            width_mm=SILK_LINE_WIDTH_FINE_MM,
+            rotation_deg=_cell_rotation(row, column, 13, 6.0),
+        )
+    if variant == 6:
+        return _line_motif(
+            dragon_curve_points(8),
+            tile_mm=_cell_scale(SILK_FINE_TILE_MM * 1.18, row, column, 14),
+            width_mm=SILK_LINE_WIDTH_FINE_MM * 0.92,
+            rotation_deg=_cell_rotation(row, column, 15, 5.0),
+        )
+    raw = self_avoiding_maze_path_points(5, 5, seed=((row * 7) + column) % 2)
+    sampled = raw[::2]
+    if sampled[-1] != raw[-1]:
+        sampled.append(raw[-1])
+    normalized = _normalize_points(sampled)
+    return _line_motif(
+        normalized[::2] + [normalized[-1]],
+        tile_mm=_cell_scale(SILK_TILE_MM * 0.9, row, column, 16),
+        width_mm=SILK_LINE_WIDTH_FINE_MM * 0.92,
+        rotation_deg=_cell_rotation(row, column, 17, 7.5),
+    )
+
+
 def _decorative_cutouts(board_interior):
     min_x, min_y, max_x, max_y = board_interior.bounds
     safe_interior = board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)
@@ -313,6 +445,59 @@ def _decorative_cutouts(board_interior):
     if not motif_parts:
         raise ValueError("decorative cutout placement produced no motifs")
     return unary_union(motif_parts).intersection(board_interior).buffer(0)
+
+
+def _curve_art_geometry(
+    points: Iterable[tuple[float, float]],
+    *,
+    tile_mm: float,
+    rotation_deg: float,
+    xoff: float,
+    yoff: float,
+    normalize: bool = False,
+    closed: bool = False,
+):
+    base_points = _normalize_points(points) if normalize else list(points)
+    centered = _centered_points(base_points)
+    if closed:
+        centered = centered + [centered[0]]
+    geometry = LineString(centered)
+    geometry = affinity.scale(geometry, xfact=tile_mm, yfact=tile_mm, origin=(0.0, 0.0))
+    if rotation_deg:
+        geometry = affinity.rotate(geometry, rotation_deg, origin=(0.0, 0.0))
+    return affinity.translate(geometry, xoff=xoff, yoff=yoff)
+
+
+def _silk_overlay_lines(board_interior, obstacle_union):
+    min_x, min_y, max_x, max_y = board_interior.bounds
+    safe_region = board_interior.buffer(-SILK_EDGE_MARGIN_MM).difference(
+        obstacle_union.buffer(SILK_OBSTACLE_CLEARANCE_MM, resolution=ARC_RESOLUTION)
+    )
+    if safe_region.is_empty:
+        return []
+    curve_specs = [
+        (koch_snowflake_points(4, anti=True), 6.8, 12.0, min_x + 18.0, min_y + 12.5, False, True, 0.22),
+        (gosper_curve_points(3), 7.0, -8.0, min_x + 33.5, min_y + 13.0, False, False, 0.20),
+        (dragon_curve_points(9), 7.2, 22.0, min_x + 48.5, min_y + 13.0, False, False, 0.18),
+        (koch_snowflake_points(4, anti=False), 6.6, -14.0, min_x + 64.0, min_y + 12.2, False, True, 0.22),
+        (self_avoiding_maze_path_points(5, 5, seed=1)[::2], 6.4, 16.0, min_x + 28.0, min_y + 24.0, True, False, 0.18),
+        (sierpinski_arrowhead_curve_points(6), 6.2, -10.0, min_x + 58.0, min_y + 24.0, False, False, 0.18),
+    ]
+    clipped_lines: list[tuple[LineString, float]] = []
+    for points, tile_mm, rotation_deg, xoff, yoff, normalize, closed, width_mm in curve_specs:
+        geometry = _curve_art_geometry(
+            points,
+            tile_mm=tile_mm,
+            rotation_deg=rotation_deg,
+            xoff=xoff,
+            yoff=yoff,
+            normalize=normalize,
+            closed=closed,
+        ).intersection(safe_region)
+        for line in _iter_lines(geometry):
+            if line.length >= 1.2:
+                clipped_lines.append((line, width_mm))
+    return clipped_lines
 
 
 def _bridge_anchors(geometry, anchors: list[Polygon], obstacle_union, board_interior):
@@ -361,8 +546,7 @@ def _remove_generated_art(board: pcbnew.BOARD) -> None:
         drawing
         for drawing in board.GetDrawings()
         if isinstance(drawing, pcbnew.PCB_SHAPE)
-        and drawing.GetShape() == pcbnew.S_POLYGON
-        and drawing.GetLayerName() in {"F.Mask", "B.Mask"}
+        and drawing.GetLayerName() in {"F.Mask", "B.Mask", "F.SilkS"}
     ]
     for drawing in old_mask_polys:
         board.Remove(drawing)
@@ -382,6 +566,31 @@ def _add_zone(board: pcbnew.BOARD, geometry, *, gnd_net_id: int, clearance_mm: f
     zone.SetOutline(_polyset_from_shapely(geometry))
     board.Add(zone)
     return zone
+
+
+def _add_polygon_shape(board: pcbnew.BOARD, geometry, *, layer: int) -> None:
+    if geometry.is_empty:
+        return
+    shape = pcbnew.PCB_SHAPE(board)
+    shape.SetLayer(layer)
+    shape.SetShape(pcbnew.S_POLYGON)
+    shape.SetFilled(True)
+    shape.SetWidth(0)
+    shape.SetPolyShape(_polyset_from_shapely(geometry, min_area_mm2=0.02, min_hole_mm2=0.0))
+    board.Add(shape)
+
+
+def _add_silk_lines(board: pcbnew.BOARD, lines: list[tuple[LineString, float]]) -> None:
+    for line, width_mm in lines:
+        coords = list(line.coords)
+        for start, end in zip(coords, coords[1:]):
+            shape = pcbnew.PCB_SHAPE(board)
+            shape.SetLayer(pcbnew.F_SilkS)
+            shape.SetShape(pcbnew.S_SEGMENT)
+            shape.SetStart(pcbnew.VECTOR2I(_from_mm(start[0]), _from_mm(start[1])))
+            shape.SetEnd(pcbnew.VECTOR2I(_from_mm(end[0]), _from_mm(end[1])))
+            shape.SetWidth(_from_mm(width_mm))
+            board.Add(shape)
 
 
 def _count_holes(geometry) -> int:
@@ -420,9 +629,11 @@ def apply_continuous_texture_fill(
     final_geometry = _bridge_anchors(carved, anchors, obstacle_union, board_interior).intersection(board_interior).buffer(0)
     if final_geometry.is_empty:
         raise ValueError("continuous texture fill produced no valid copper area")
+    silk_lines = _silk_overlay_lines(board_interior, obstacle_union)
 
     _remove_generated_art(board)
     _add_zone(board, final_geometry, gnd_net_id=gnd_net.GetNetCode(), clearance_mm=clearance_mm, min_thickness_mm=min_thickness_mm)
+    _add_silk_lines(board, silk_lines)
 
     filler = pcbnew.ZONE_FILLER(board)
     filler.Fill(board.Zones())
