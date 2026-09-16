@@ -48,6 +48,36 @@ write JSON reports in the mounted working directory. If you run them from the
 repo root as shown above, KiCad writes `demo-erc.json` and `demo-drc.json` to
 the repo root unless you pass `--output` or use `--workdir hardware/kicad/demo`.
 
+## Fractal routing experiment
+
+This repo also includes `hardware/kicad/fractal_trace_router.py`, which writes a
+deliberately absurd Hilbert-curve copper route into
+`hardware/kicad/demo/fractal_demo.kicad_pcb`.
+
+On the padless demo board it closes the shape with a short return path so KiCad
+does not flag the decorative trace as dangling copper.
+
+Generate the board copy:
+
+```bash
+python3 hardware/kicad/fractal_trace_router.py
+```
+
+Then validate and preview it:
+
+```bash
+./scripts/kicad-cli.sh pcb drc \
+  --format json \
+  --output hardware/kicad/demo/fractal_demo-drc.json \
+  hardware/kicad/demo/fractal_demo.kicad_pcb
+
+./scripts/kicad-cli.sh pcb export svg \
+  --output hardware/kicad/demo/fractal_demo.svg \
+  hardware/kicad/demo/fractal_demo.kicad_pcb
+```
+
+See `hardware/kicad/fractal-routing-notes.md` for the blunt electrical caveats.
+
 ## Known limitations
 
 - KiCad is intentionally pinned to `9.0`; update the wrapper if the project
