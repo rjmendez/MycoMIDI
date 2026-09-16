@@ -30,4 +30,4 @@ jobs:
           fi
 
       - name: Run unit tests
-        run: python3 -m unittest tools.test_musicgen tools.test_tokenizer -v
+        run: python3 -m unittest tools.test_musicgen tools.test_tokenizer tools.test_kicad_lib -v

@@ -4,6 +4,16 @@
 - `hardware/pin-board.md` -- passive gold-pin electrode header, humid zone
 - `hardware/adc-module.md` -- ADS131M08 module, dry zone, scales 8/16/24/32ch
 
+## Design tool accuracy & safety
+
+Any generated KiCad text, auto-built footprints, or machine-classified DRC/ERC
+reports in this repository should be treated as first-pass engineering aids,
+not fabrication sign-off. Before ordering boards or connecting electrode
+hardware, a qualified human should review connector pinouts, reference routing,
+analog front-end limits, isolation assumptions, and any safety implications for
+bioelectric measurements. Automated output can accelerate iteration, but it is
+not the final authority for hardware that may touch living samples or people.
+
 ## Species reference (Adamatzky, arXiv:2112.09907, verified)
 | Species        | Avg interval | Avg amplitude |
 |----------------|--------------|----------------|
