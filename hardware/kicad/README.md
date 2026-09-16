@@ -76,6 +76,10 @@ This repo also includes `hardware/kicad/fractal_trace_router.py`, which writes a
 deliberately absurd Hilbert-curve copper route into
 `hardware/kicad/demo/fractal_demo.kicad_pcb`.
 
+For future geometry experiments, `hardware/kicad/curves/gosper_curve.py`
+provides a standalone normalized Gosper/flowsnake point generator that can be
+fed into the same rectangle-mapping helpers used by the Hilbert path.
+
 On the padless demo board it closes the shape with a short return path so KiCad
 does not flag the decorative trace as dangling copper.
 
