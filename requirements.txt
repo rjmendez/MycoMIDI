@@ -1,0 +1,8 @@
+# Core runtime
+numpy>=2
+paho-mqtt>=1
+python-rtmidi
+
+# Raspberry Pi hardware runtime
+spidev
+RPi.GPIO
