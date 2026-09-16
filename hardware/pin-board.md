@@ -26,6 +26,30 @@ Passive only. No ICs, no power. Lives in the humid zone (in/on the bag).
 - Label channel 0..7 (or 0..31 across boards) directly on the board
   silkscreen/marker -- must match tokenizer channel-id config
 
+## Future driven-ground / bias-electrode option
+- Current pin board stays passive today: recording pins go to `AINxP`, the
+  shared passive reference electrode goes to the corresponding `AINxN`, and
+  no electrode is actively driven yet.
+- For a future ADS131M08 revision, add a dedicated bias electrode path in the
+  dry-zone analog front-end: estimate the channels' shared common-mode signal,
+  low-pass/filter it, buffer it, invert it, and drive that correction back
+  into the substrate or fruit body through a separate bias/reference electrode.
+- This is the general driven-right-leg (DRL) / driven-ground idea used in many
+  bioelectric front ends: instead of leaving the body/substrate at passive
+  ground, actively drive an inverted common-mode estimate so 50/60Hz mains
+  pickup and other common-mode interference are reduced before digitization.
+- The ADS131M08 does not provide the built-in bias-drive amplifier found on
+  some biopotential ADCs, so MycoMIDI would need an external low-noise op-amp
+  stage plus conservative RC filtering and patient/electrode safety resistors.
+- Keep this as a design note only for now: it is not yet built, not yet tested,
+  and should be validated first on resistor/phantom loads before any biological
+  experiment.
+- Approach inspired by OpenBCI Ganglion's reference/bias design
+  (github.com/OpenBCI/Ganglion_Hardware_Design_Files, CC BY-SA 4.0) - see
+  `References.sch` for their exact implementation. This document intentionally
+  describes only the general approach and a MycoMIDI-specific ADS131M08
+  adaptation, not a copy of the Ganglion schematic.
+
 ## Electrode tip options (cost order)
 1. Bare steel needle - avoid, corrodes in oxidizing substrate
 2. Mechanical pencil graphite - free, short-lived, quick test only
