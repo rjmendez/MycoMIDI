@@ -249,3 +249,35 @@ The real-board profile:
   clear and preserve a zero-violation DRC.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
   checked-in `adc_board_8ch.kicad_pcb`.
+
+### Fractal signal rerouting on the real ADC board
+
+`hardware/kicad/fractal_signal_router.py` surgically replaces a small verified
+subset of the plain Freerouting analog segments with procedural meanders on the
+real `adc_board_8ch.kicad_pcb`.
+
+Run it after the clean autoroute, then re-run DRC:
+
+```bash
+python3 hardware/kicad/fractal_signal_router.py \
+  --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+
+./scripts/kicad-cli.sh pcb drc \
+  --format json \
+  --output hardware/kicad/adc_board/adc_board_8ch-drc.json \
+  --exit-code-violations \
+  hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+```
+
+This pass intentionally stays narrow:
+
+- rerouted nets: `AIN0N`, `AIN1P`, `AIN2P`, `AIN5P`
+- untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
+  `DOUT`, `AVDD`, `DVDD`, `REFP`, and the remaining AIN nets
+- no GND-zone regeneration or decorative-fill edits; the script only removes
+  four specific signal `segment` records and appends replacement `segment`
+  chains for those same net ids
+
+See `hardware/kicad/fractal-signal-routing-notes.md` for the exact net/family
+mapping and the verification method beyond plain DRC.
