@@ -2,9 +2,10 @@
 
 This feature is **decorative PCB art**, not an electrical design technique.
 
-It fills blank board area with the same Hilbert-curve geometry already used by
-`hardware/kicad/fractal_trace_router.py`, but uses that geometry in two
-different deployment styles:
+It fills blank board area with procedural fractal linework. The demo board uses
+the same Hilbert-curve geometry already used by
+`hardware/kicad/fractal_trace_router.py`; the real ADC board now mixes multiple
+curve families so the result stops looking like one repeated stamp.
 
 - the original isolated-net demo board
 - the real ADS131M08 board, where the copper art is intentionally tied to the
@@ -47,7 +48,8 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
    same clearance model as the decorative fill (`0.25 mm` local clearance,
    `0.45 mm` region clearance for copper)
 4. greedily merges contiguous free cells into candidate rectangles
-5. tiles the shared Hilbert geometry repeatedly across each useful rectangle
+5. tiles repeated curve instances across each useful rectangle, rotating the
+   selected family per region (`moore`, `peano`, `hilbert` at present)
    instead of placing one fixed-size fractal in each area
 6. routes the real-board copper variants only from anchor points already on the
    real `GND` network, then emits every new segment/via on that same KiCad net
@@ -76,10 +78,10 @@ cannot accidentally short to any circuit net in this demo.
 
 ## Why thin traces instead of a poured plane
 
-This implementation uses dense Hilbert **track geometry** rather than a large poured
-polygonal copper plane. That keeps the generated file simple, human-auditable, and
-predictable in the text-based workflow while still exercising both copper layers,
-mask openings, and via-connected continuity.
+This implementation uses dense fractal **track geometry** rather than a large
+poured polygonal copper plane. That keeps the generated file simple,
+human-auditable, and predictable in the text-based workflow while still
+exercising both copper layers, mask openings, and via-connected continuity.
 
 On the real ADS131M08 board, the copper art width is intentionally smaller than
 the functional routing width. The fractal is decorative GND augmentation, not a
@@ -87,8 +89,8 @@ high-current power feed and not a precision impedance-controlled signal, so
 there is no reason to make it as fat as the real traces.
 
 If you later want truly flood-filled fractal polygons, build that on top of the
-same Hilbert geometry only after validating the polygon boolean/offset math
-carefully.
+same region-detection pipeline only after validating the polygon boolean/offset
+math carefully.
 
 ## Honest caveats
 

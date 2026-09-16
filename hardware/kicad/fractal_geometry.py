@@ -36,6 +36,68 @@ def generate_hilbert_points(order: int) -> list[tuple[int, int]]:
     return [d2xy(order, distance) for distance in range(size * size)]
 
 
+def expand_lsystem(axiom: str, rules: dict[str, str], iterations: int) -> str:
+    if iterations < 0:
+        raise ValueError("iterations must be non-negative")
+    state = axiom
+    for _ in range(iterations):
+        state = "".join(rules.get(symbol, symbol) for symbol in state)
+    return state
+
+
+def trace_lsystem(
+    program: str,
+    *,
+    angle_deg: float,
+    draw_symbols: set[str],
+    step: float = 1.0,
+) -> list[tuple[float, float]]:
+    if step <= 0:
+        raise ValueError("step must be positive")
+    x = 0.0
+    y = 0.0
+    heading_deg = 0.0
+    points = [(x, y)]
+    for symbol in program:
+        if symbol in draw_symbols:
+            x += step * math.cos(math.radians(heading_deg))
+            y += step * math.sin(math.radians(heading_deg))
+            points.append((round(x, 6), round(y, 6)))
+        elif symbol == "+":
+            heading_deg += angle_deg
+        elif symbol == "-":
+            heading_deg -= angle_deg
+    return points
+
+
+def generate_moore_points(order: int) -> list[tuple[float, float]]:
+    if order < 1:
+        raise ValueError("order must be at least 1")
+    program = expand_lsystem(
+        "LFL+F+LFL",
+        {
+            "L": "-RF+LFL+FR-",
+            "R": "+LF-RFR-FL+",
+        },
+        order,
+    )
+    return trace_lsystem(program, angle_deg=90.0, draw_symbols={"F"})
+
+
+def generate_peano_points(order: int) -> list[tuple[float, float]]:
+    if order < 1:
+        raise ValueError("order must be at least 1")
+    program = expand_lsystem(
+        "L",
+        {
+            "L": "LFRFL-F-RFLFR+F+LFRFL",
+            "R": "RFLFR+F+LFRFL-F-RFLFR",
+        },
+        order,
+    )
+    return trace_lsystem(program, angle_deg=90.0, draw_symbols={"F", "L", "R"})
+
+
 def format_mm(value: float) -> str:
     if math.isclose(value, 0.0, abs_tol=1e-9):
         value = 0.0

@@ -199,9 +199,9 @@ handwritten point-to-point router:
 
 ### Fractal dead-space fill on the real ADC board
 
-The repository also includes `hardware/kicad/fractal_fill.py`, which reuses the
-shared Hilbert geometry generator to place decorative dead-space fill on the
-real ADS131M08 board while staying on the board's actual `GND` net.
+The repository also includes `hardware/kicad/fractal_fill.py`, which places
+decorative dead-space fill on the real ADS131M08 board while staying on the
+board's actual `GND` net.
 
 Run it in-place on the checked-in routed board:
 
@@ -218,8 +218,8 @@ The real-board profile:
   instead of using three hardcoded decorative rectangles
 - builds obstacle bounds from existing pads, routed tracks, vias, footprint
   extents, and silkscreen/text so the fill follows the routed board geometry
-- merges free grid cells into rectangular regions, then tiles repeated Hilbert
-  curves across those detected regions
+- merges free grid cells into rectangular regions, then tiles varied fractal
+  families (`moore`, `peano`, `hilbert`) across those detected regions
 - confirms the routed board already defines `GND` in the KiCad net table and
   uses that real net id for every decorative copper segment/via
 - keeps the decorative copper intentionally narrow at `0.1 mm`, which is much
@@ -238,7 +238,7 @@ The real-board profile:
 - The previous handwritten routing pass created many same-layer crossings and
   shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
   produces a clean DRC on this board.
-- The real ADS131M08 board now also carries decorative Hilbert fill on
+- The real ADS131M08 board now also carries decorative multi-curve fill on
   `F.Cu`/`B.Cu`/silkscreen; the copper art is tied to the existing `GND` net,
   not isolated on dummy art-only nets.
 - C5/C6 silkscreen reference labels are placed explicitly in the generator so

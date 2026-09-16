@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from fractal_geometry import format_mm, generate_hilbert_points
+from fractal_geometry import format_mm, generate_hilbert_points, generate_moore_points, generate_peano_points
 
 DEFAULT_INPUT = Path("hardware/kicad/demo/demo.kicad_pcb")
 DEFAULT_OUTPUT = Path("hardware/kicad/demo/fractal_fill_demo.kicad_pcb")
@@ -37,6 +37,7 @@ ADC_SILK_TILE_MARGIN_MM = 0.4
 ADC_COPPER_TILE_MARGIN_MM = 0.45
 ADC_MASK_OPENING_WIDTH_MM = 0.28
 ADC_TOP_LEVEL_EMBEDDED_FONTS = "\n\t(embedded_fonts no)\n"
+ADC_REAL_BOARD_CURVES = ("moore", "peano", "hilbert")
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class CopperRegionPlan:
     anchor: tuple[float, float]
     path: list[tuple[float, float]]
     exposed: bool
+    curve_name: str
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,21 @@ class RegionStats:
     copper_regions: list[CopperRegionPlan]
     free_silk_area_mm2: float
     free_copper_area_mm2: float
+
+
+def generate_curve_points(curve_name: str) -> list[tuple[float, float]]:
+    if curve_name == "hilbert":
+        return generate_hilbert_points(3)
+    if curve_name == "moore":
+        return generate_moore_points(2)
+    if curve_name == "peano":
+        return generate_peano_points(2)
+    raise ValueError(f"unknown curve family {curve_name!r}")
+
+
+def preferred_curve_names(index: int) -> list[str]:
+    offset = index % len(ADC_REAL_BOARD_CURVES)
+    return list(ADC_REAL_BOARD_CURVES[offset:]) + list(ADC_REAL_BOARD_CURVES[:offset])
 
 
 def map_points_to_rect(
@@ -818,7 +835,7 @@ def choose_tile_count(span_mm: float) -> int:
     return max(1, count)
 
 
-def build_tiled_curve(points: list[tuple[int, int]], rect: Rect, *, start_corner: str, margin: float) -> list[tuple[float, float]]:
+def build_tiled_curve(points: list[tuple[float, float]], rect: Rect, *, start_corner: str, margin: float) -> list[tuple[float, float]]:
     cols = choose_tile_count(rect.width)
     rows = choose_tile_count(rect.height)
     tile_width = rect.width / cols
@@ -923,51 +940,55 @@ def copper_routing_obstacles(obstacles: list[Obstacle]) -> list[Obstacle]:
 def route_copper_region(
     rect: Rect,
     *,
+    curve_names: list[str],
     anchors: list[tuple[float, float]],
     obstacles: list[Obstacle],
     gnd_net_name: str,
     copper_width: float,
     via_size: float,
-) -> tuple[float, tuple[float, float], list[tuple[float, float]]] | None:
-    base_points = generate_hilbert_points(3)
-    best_choice: tuple[float, tuple[float, float], list[tuple[float, float]]] | None = None
-    for start_corner in ("bl", "br", "tl", "tr"):
-        core_path = build_tiled_curve(base_points, rect, start_corner=start_corner, margin=ADC_COPPER_TILE_MARGIN_MM)
-        if not core_path:
-            continue
-        if not via_clear(core_path[-1], size=via_size, clearance=ADC_CLEARANCE_MM, obstacles=obstacles, allowed_net_name=gnd_net_name):
-            continue
-        for anchor in anchors:
-            connector: list[tuple[float, float]] | None = None
-            for candidate in connector_candidates(anchor, core_path[0]):
-                if path_clear(
-                    candidate,
+) -> tuple[str, float, tuple[float, float], list[tuple[float, float]]] | None:
+    for curve_name in curve_names:
+        base_points = generate_curve_points(curve_name)
+        best_choice: tuple[float, tuple[float, float], list[tuple[float, float]]] | None = None
+        for start_corner in ("bl", "br", "tl", "tr"):
+            core_path = build_tiled_curve(base_points, rect, start_corner=start_corner, margin=ADC_COPPER_TILE_MARGIN_MM)
+            if not core_path:
+                continue
+            if not via_clear(core_path[-1], size=via_size, clearance=ADC_CLEARANCE_MM, obstacles=obstacles, allowed_net_name=gnd_net_name):
+                continue
+            for anchor in anchors:
+                connector: list[tuple[float, float]] | None = None
+                for candidate in connector_candidates(anchor, core_path[0]):
+                    if path_clear(
+                        candidate,
+                        width=copper_width,
+                        clearance=ADC_CLEARANCE_MM,
+                        obstacles=obstacles,
+                        allowed_anchor=anchor,
+                        allowed_net_name=gnd_net_name,
+                    ):
+                        connector = candidate
+                        break
+                if connector is None:
+                    continue
+                candidate_path = connector + core_path[1:]
+                if not path_clear(
+                    candidate_path,
                     width=copper_width,
                     clearance=ADC_CLEARANCE_MM,
                     obstacles=obstacles,
                     allowed_anchor=anchor,
                     allowed_net_name=gnd_net_name,
                 ):
-                    connector = candidate
-                    break
-            if connector is None:
-                continue
-            candidate_path = connector + core_path[1:]
-            if not path_clear(
-                candidate_path,
-                width=copper_width,
-                clearance=ADC_CLEARANCE_MM,
-                obstacles=obstacles,
-                allowed_anchor=anchor,
-                allowed_net_name=gnd_net_name,
-            ):
-                continue
-            length = sum(math.dist(start, end) for start, end in zip(connector[:-1], connector[1:], strict=True))
-            if length > ADC_MAX_COPPER_CONNECTOR_MM:
-                continue
-            if best_choice is None or length < best_choice[0]:
-                best_choice = (length, anchor, candidate_path)
-    return best_choice
+                    continue
+                length = sum(math.dist(start, end) for start, end in zip(connector[:-1], connector[1:], strict=True))
+                if length > ADC_MAX_COPPER_CONNECTOR_MM:
+                    continue
+                if best_choice is None or length < best_choice[0]:
+                    best_choice = (length, anchor, candidate_path)
+        if best_choice is not None:
+            return (curve_name, best_choice[0], best_choice[1], best_choice[2])
+    return None
 
 
 def split_copper_region(rect: Rect) -> list[tuple[Rect, Rect]]:
@@ -1005,10 +1026,11 @@ def choose_copper_regions(
         raise ValueError("could not find any existing GND vias to anchor the decorative copper")
 
     routing_obstacles = copper_routing_obstacles(obstacles)
-    routed_regions: list[tuple[Rect, float, tuple[float, float], list[tuple[float, float]]]] = []
-    for rect in regions:
+    routed_regions: list[tuple[Rect, str, float, tuple[float, float], list[tuple[float, float]]]] = []
+    for index, rect in enumerate(regions):
         routed = route_copper_region(
             rect,
+            curve_names=preferred_curve_names(index),
             anchors=anchors,
             obstacles=routing_obstacles,
             gnd_net_name=gnd_net_name,
@@ -1017,18 +1039,19 @@ def choose_copper_regions(
         )
         if routed is None:
             continue
-        routed_regions.append((rect, routed[0], routed[1], routed[2]))
+        routed_regions.append((rect, routed[0], routed[1], routed[2], routed[3]))
 
     if not routed_regions:
         raise ValueError("could not find any anchorable GND fill regions")
 
     plans: list[CopperRegionPlan] = []
     if len(routed_regions) == 1:
-        rect, _, _, _ = routed_regions[0]
+        rect, _, _, _, _ = routed_regions[0]
         best_pair: tuple[float, tuple[CopperRegionPlan, CopperRegionPlan]] | None = None
         for first_rect, second_rect in split_copper_region(rect):
             first = route_copper_region(
                 first_rect,
+                curve_names=preferred_curve_names(0),
                 anchors=anchors,
                 obstacles=routing_obstacles,
                 gnd_net_name=gnd_net_name,
@@ -1037,6 +1060,7 @@ def choose_copper_regions(
             )
             second = route_copper_region(
                 second_rect,
+                curve_names=preferred_curve_names(1),
                 anchors=anchors,
                 obstacles=routing_obstacles,
                 gnd_net_name=gnd_net_name,
@@ -1046,10 +1070,10 @@ def choose_copper_regions(
             if first is None or second is None:
                 continue
             pair = (
-                first[0] + second[0],
+                first[1] + second[1],
                 (
-                    CopperRegionPlan(rect=first_rect, anchor=first[1], path=first[2], exposed=False),
-                    CopperRegionPlan(rect=second_rect, anchor=second[1], path=second[2], exposed=True),
+                    CopperRegionPlan(rect=first_rect, anchor=first[2], path=first[3], exposed=False, curve_name=first[0]),
+                    CopperRegionPlan(rect=second_rect, anchor=second[2], path=second[3], exposed=True, curve_name=second[0]),
                 ),
             )
             if best_pair is None or pair[0] < best_pair[0]:
@@ -1057,13 +1081,14 @@ def choose_copper_regions(
         if best_pair is not None:
             return [best_pair[1][0], best_pair[1][1]]
 
-    for index, (rect, _, anchor, path) in enumerate(routed_regions):
+    for index, (rect, curve_name, _, anchor, path) in enumerate(routed_regions):
         plans.append(
             CopperRegionPlan(
                 rect=rect,
                 anchor=anchor,
                 path=path,
                 exposed=(index % 2) == 1,
+                curve_name=curve_name,
             )
         )
     if not any(not plan.exposed for plan in plans):
@@ -1132,13 +1157,15 @@ def build_adc_board_blocks(
     clean_text = strip_generated_adc_art(source_text)
     gnd_net_id = board_net_id(clean_text, gnd_net_name)
     stats = adc_region_stats(clean_text, gnd_net_name=gnd_net_name, copper_width=copper_width, via_size=via_size)
-    silk_points = generate_hilbert_points(3)
 
     blocks: list[str] = []
     silk_regions = [rect for rect in stats.silk_regions if not any(rect.intersects(plan.rect) for plan in stats.copper_regions)]
-    for rect in silk_regions:
-        front = build_tiled_curve(silk_points, rect, start_corner="bl", margin=ADC_SILK_TILE_MARGIN_MM)
-        back = build_tiled_curve(silk_points, rect, start_corner="tr", margin=ADC_SILK_TILE_MARGIN_MM)
+    silk_start_corners = ("bl", "tr", "br", "tl")
+    for index, rect in enumerate(silk_regions):
+        curve_name = preferred_curve_names(index)[0]
+        silk_points = generate_curve_points(curve_name)
+        front = build_tiled_curve(silk_points, rect, start_corner=silk_start_corners[index % len(silk_start_corners)], margin=ADC_SILK_TILE_MARGIN_MM)
+        back = build_tiled_curve(silk_points, rect, start_corner=silk_start_corners[(index + 1) % len(silk_start_corners)], margin=ADC_SILK_TILE_MARGIN_MM)
         blocks.append(build_graphic_lines(front, width=silk_width, layer="F.SilkS"))
         blocks.append(build_graphic_lines(back, width=silk_width, layer="B.SilkS"))
 
@@ -1156,8 +1183,8 @@ def build_adc_board_blocks(
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Write a KiCad board copy with Hilbert-curve decorative fill. "
-            "The demo profile uses isolated art nets; the adc-board-gnd profile ties the copper art to real GND."
+            "Write a KiCad board copy with decorative fractal fill. "
+            "The demo profile uses isolated Hilbert art nets; the adc-board-gnd profile mixes multiple curve families on real GND."
         ),
     )
     parser.add_argument("--profile", choices=("demo", "adc-board-gnd"), default="demo", help="Board profile to decorate.")
@@ -1231,11 +1258,13 @@ def main() -> int:
     )
     if args.profile == "adc-board-gnd":
         stats = adc_region_stats(board_text, gnd_net_name=args.gnd_net_name, copper_width=args.copper_width, via_size=args.via_size)
+        used_curves = sorted({plan.curve_name for plan in stats.copper_regions} | {preferred_curve_names(index)[0] for index, rect in enumerate(stats.silk_regions) if not any(rect.intersects(plan.rect) for plan in stats.copper_regions)})
         print(f"verified real copper art net: {args.gnd_net_name} (net {board_net_id(board_text, args.gnd_net_name)})")
         print(
             f"detected {len(stats.silk_regions)} silk regions covering ~{stats.free_silk_area_mm2:.0f} mm^2 free space; "
             f"anchored {len(stats.copper_regions)} GND copper regions across ~{sum(plan.rect.area for plan in stats.copper_regions):.0f} mm^2"
         )
+        print(f"mixed curve families: {', '.join(used_curves)}")
     return 0
 
 
