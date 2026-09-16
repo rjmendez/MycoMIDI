@@ -123,6 +123,33 @@ handwritten point-to-point router:
   hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
 ```
 
+### Fractal dead-space fill on the real ADC board
+
+The repository also includes `hardware/kicad/fractal_fill.py`, which reuses the
+shared Hilbert geometry generator to place decorative dead-space fill on the
+real ADS131M08 board while staying on the board's actual `GND` net.
+
+Run it in-place on the checked-in routed board:
+
+```bash
+python3 hardware/kicad/fractal_fill.py \
+  --profile adc-board-gnd \
+  --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+```
+
+The real-board profile:
+
+- confirms the routed board already defines `GND` in the KiCad net table and
+  uses that real net id for every decorative copper segment/via
+- keeps the decorative copper intentionally narrow at `0.1 mm`, which is much
+  smaller than the board's functional `0.2 mm` routes because this art is only
+  augmenting ground copper, not carrying a dedicated signal or power path
+- validates the chosen empty rectangles against existing pads, vias, traces, and
+  footprint bodies before writing the board
+- leaves the masked/tented and exposed/unmasked copper variants electrically
+  safe because both only connect `GND` to `GND`
+
 ### Current status
 
 - The board file is a real KiCad PCB with outline, placed footprints, and a
@@ -131,6 +158,9 @@ handwritten point-to-point router:
 - The previous handwritten routing pass created many same-layer crossings and
   shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
   produces a clean DRC on this board.
+- The real ADS131M08 board now also carries decorative Hilbert fill on
+  `F.Cu`/`B.Cu`/silkscreen; the copper art is tied to the existing `GND` net,
+  not isolated on dummy art-only nets.
 - C5/C6 silkscreen reference labels are placed explicitly in the generator so
   they stay readable and off the capacitor pads/traces after autorouting.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
