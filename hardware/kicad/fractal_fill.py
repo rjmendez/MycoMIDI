@@ -11,6 +11,7 @@ from typing import Iterable
 
 from curves.koch_snowflake_curve import koch_snowflake_points
 from fractal_geometry import format_mm
+from adc_texture_fill import apply_continuous_texture_fill
 
 DEFAULT_INPUT = Path("hardware/kicad/demo/demo.kicad_pcb")
 DEFAULT_OUTPUT = Path("hardware/kicad/demo/fractal_fill_demo.kicad_pcb")
@@ -1463,40 +1464,38 @@ def main() -> int:
             via_drill=args.via_drill,
         )
     else:
-        board_text = strip_generated_adc_art(source_text)
-        blocks = build_adc_board_blocks(
-            source_text=board_text,
+        stats = apply_continuous_texture_fill(
+            args.output,
             gnd_net_name=args.gnd_net_name,
-            silk_width=args.silk_width,
-            copper_width=args.copper_width,
-            mask_width=args.mask_width,
-            via_size=args.via_size,
-            via_drill=args.via_drill,
+            clearance_mm=ADC_CLEARANCE_MM,
+            edge_inset_mm=1.5,
+            min_thickness_mm=args.copper_width,
         )
+        print(
+            f"wrote {args.output} with profile={args.profile}, "
+            f"copper_width={args.copper_width}, silk_width={args.silk_width}, mask_width={args.mask_width}"
+        )
+        print(f"verified real copper art net: {args.gnd_net_name} (net {stats.gnd_net_id})")
+        print(
+            f"obstacles: {stats.pads} pads, {stats.tracks} tracks, {stats.vias} vias, {stats.footprints} footprint courtyards/body bounds; "
+            f"anchored through {stats.anchor_vias} existing GND vias"
+        )
+        print(
+            f"continuous texture zone: 1 zone object with {stats.outer_rings} outer polygons, "
+            f"{stats.holes} holes, ~{stats.exposed_area_mm2:.0f} mm^2 textured copper"
+        )
+        print(f"maze motif source: {stats.maze_motif}")
+        return 0
 
     output_text = insert_blocks(board_text, *blocks)
     if newline == "\r\n":
         output_text = output_text.replace("\n", "\r\n")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(output_text, encoding="utf-8")
-    if args.profile == "adc-board-gnd":
-        if refill_zones_with_pcbnew(args.output):
-            print(f"refilled copper zones with pcbnew: {args.output}")
-        else:
-            print("warning: pcbnew unavailable; zone outlines were written but filled polygons were not baked into the board file")
     print(
         f"wrote {args.output} with profile={args.profile}, "
         f"copper_width={args.copper_width}, silk_width={args.silk_width}, mask_width={args.mask_width}"
     )
-    if args.profile == "adc-board-gnd":
-        stats = adc_region_stats(board_text, gnd_net_name=args.gnd_net_name, copper_width=args.copper_width, via_size=args.via_size)
-        used_curves = sorted({plan.curve_name for plan in stats.copper_regions} | {preferred_curve_names(index)[0] for index, rect in enumerate(stats.silk_regions) if not any(rect.intersects(plan.rect) for plan in stats.copper_regions)})
-        print(f"verified real copper art net: {args.gnd_net_name} (net {board_net_id(board_text, args.gnd_net_name)})")
-        print(
-            f"detected {len(stats.silk_regions)} silk regions covering ~{stats.free_silk_area_mm2:.0f} mm^2 free space; "
-            f"anchored {len(stats.copper_regions)} GND copper regions across ~{sum(plan.rect.area for plan in stats.copper_regions):.0f} mm^2"
-        )
-        print(f"mixed curve families: {', '.join(used_curves)}")
     return 0
 
 

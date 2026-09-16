@@ -203,35 +203,37 @@ The repository also includes `hardware/kicad/fractal_fill.py`, which places
 decorative dead-space fill on the real ADS131M08 board while staying on the
 board's actual `GND` net.
 
-Run it in-place on the checked-in routed board:
+Run it in-place on the checked-in routed board inside the KiCad container
+(with `shapely` installed into that container first):
 
 ```bash
-python3 hardware/kicad/fractal_fill.py \
-  --profile adc-board-gnd \
-  --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
-  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+docker run --rm -u $(id -u):$(id -g) -v "$PWD:/work" -w /work \
+  kicad/kicad:9.0 \
+  sh -lc 'python3 -m pip install --quiet shapely && python3 hardware/kicad/fractal_fill.py \
+    --profile adc-board-gnd \
+    --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+    --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb'
 ```
 
-The real-board profile:
+The real-board profile now:
 
-- parses the actual board `Edge.Cuts` loop and scans the real board interior
-  instead of using three hardcoded decorative rectangles
-- builds obstacle bounds from existing pads, routed tracks, vias, footprint
-  extents, and silkscreen/text so the fill follows the routed board geometry
-- merges free grid cells into rectangular regions, then reshapes the usable
-  exposed-copper regions with closed Koch-derived boundaries instead of leaving
-  them as plain rectangles
-- confirms the routed board already defines `GND` in the KiCad net table and
-  uses that real net id for every decorative copper zone/corridor
-- emits the real-board copper as solid exposed front-layer `GND` zones whose
-  full outer silhouettes are fractalized, rather than as sparse decorative
-  trace skeletons or rectangles with a single notched edge
-- routes the copper variants only from existing `GND` anchors, so every new
-  copper object remains a `GND`-to-`GND` addition
-- when `pcbnew` is available, immediately refills those zones and saves the
-  computed `filled_polygon` data back into the board file
-- keeps the visible exposed copper and the hidden connector corridors
-  electrically safe because both only connect `GND` to `GND`
+- reads the real `Edge.Cuts` outline through `pcbnew` and insets it to define a
+  true full-board interior polygon
+- unions real obstacles with `shapely`: exact pad polygons, routed track/via
+  copper, and each footprint courtyard (falling back to body bounds only if a
+  courtyard is missing)
+- generates a continuous whole-board texture from two overlaid buffered
+  space-filling ribbons produced by `curves/selfavoiding_maze_path.py`
+- subtracts the obstacle union from that continuous texture, so the decorative
+  `GND` copper gets real cutouts around the placed board geometry instead of
+  being stamped into a few pre-detected rectangles
+- replaces the old `adc-fractal-fill-region-*` / `adc-fractal-fill-corridor-*`
+  sticker zones with one new front-copper `GND` zone object carrying multiple
+  polygon outlines/holes as needed
+- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean;
+  inspect the pattern in the exported copper-layer SVG render
+- refills the zone with `pcbnew` immediately, baking fresh `filled_polygon`
+  data back into the checked-in `.kicad_pcb` file
 
 ### Current status
 
