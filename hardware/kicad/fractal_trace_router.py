@@ -6,45 +6,14 @@ import re
 import uuid
 from pathlib import Path
 
+from fractal_geometry import format_mm, generate_hilbert_points
+
 
 DEFAULT_INPUT = Path("hardware/kicad/demo/demo.kicad_pcb")
 DEFAULT_OUTPUT = Path("hardware/kicad/demo/fractal_demo.kicad_pcb")
 DEFAULT_LAYER = "F.Cu"
 DEFAULT_NET_ID = 1
 DEFAULT_NET_NAME = "FRACTAL_FUN"
-
-
-def rot(n: int, x: int, y: int, rx: int, ry: int) -> tuple[int, int]:
-    if ry == 0:
-        if rx == 1:
-            x = n - 1 - x
-            y = n - 1 - y
-        x, y = y, x
-    return x, y
-
-
-def d2xy(order: int, distance: int) -> tuple[int, int]:
-    size = 1 << order
-    x = 0
-    y = 0
-    t = distance
-    step = 1
-    while step < size:
-        rx = 1 & (t // 2)
-        ry = 1 & (t ^ rx)
-        x, y = rot(step, x, y, rx, ry)
-        x += step * rx
-        y += step * ry
-        t //= 4
-        step <<= 1
-    return x, y
-
-
-def generate_hilbert_points(order: int) -> list[tuple[int, int]]:
-    if order < 1:
-        raise ValueError("order must be at least 1")
-    size = 1 << order
-    return [d2xy(order, distance) for distance in range(size * size)]
 
 
 def map_points(
@@ -102,10 +71,6 @@ def map_points(
         my = sy + tangent[1] * (length * u) + normal[1] * (spread * normalized_v)
         mapped.append((mx, my))
     return mapped
-
-
-def format_mm(value: float) -> str:
-    return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
 def build_segments(
