@@ -130,6 +130,7 @@ generation without requiring KiCad symbol libraries:
 
 - `generate_channel.py`: one-channel proof of concept
 - `generate_board.py`: 8-channel electrode-board base schematic
+- `generate_active_probe_flex.py`: one-channel active recording-electrode flex probe concept
 
 Both follow the documented ADS131M08 input semantics from
 `hardware/adc-module.md` and the connector conventions from
@@ -162,8 +163,14 @@ python hardware/kicad/generate_board.py
 
 - `hardware/kicad/single_channel_prototype.net`
 - `hardware/kicad/electrode_board_8ch.net`
+- `hardware/kicad/active_probe_flex.net`
 
 `generate_board.py` maps all eight `AINxP/AINxN` differential pairs to one
 16-pin `CONN_02X08`-style header footprint and leaves the future driven-ground
 / bias path as a clearly labeled `BIAS_DRIVE_TODO` placeholder net stubbed to
 `TP1`.
+
+`generate_active_probe_flex.py` captures a first-pass LMP7701 unity-gain buffer
+probe that keeps the recording-electrode high-impedance node local, passes the
+reference electrode straight through, and returns a buffered `AINxP` signal plus
+`REF_PASS` for `AINxN`.

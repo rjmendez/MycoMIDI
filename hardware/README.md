@@ -3,6 +3,7 @@
 ## Hardware
 - `hardware/pin-board.md` -- passive gold-pin electrode header, humid zone
 - `hardware/adc-module.md` -- ADS131M08 module, dry zone, scales 8/16/24/32ch
+- `hardware/active-probe-flex-design.md` -- LMP7701-based active recording-electrode flex concept, schematic-level only in this pass
 
 ## Design tool accuracy & safety
 
