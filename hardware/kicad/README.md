@@ -221,12 +221,11 @@ The real-board profile:
 - merges free grid cells into rectangular regions, then tiles varied fractal
   families (`moore`, `peano`, `hilbert`) across those detected regions
 - confirms the routed board already defines `GND` in the KiCad net table and
-  uses that real net id for every decorative copper segment/via
-- keeps the decorative copper intentionally narrow at `0.1 mm`, which is much
-  smaller than the board's functional `0.2 mm` routes because this art is only
-  augmenting ground copper, not carrying a dedicated signal or power path
+  uses that real net id for every decorative copper zone/corridor
+- emits the real-board copper as solid poured `GND` zones whose boundaries are
+  fractalized, rather than as sparse decorative trace skeletons
 - routes the copper variants only from existing `GND` anchors, so every new
-  copper segment/via remains a `GND`-to-`GND` addition
+  copper object remains a `GND`-to-`GND` addition
 - leaves the masked/tented and exposed/unmasked copper variants electrically
   safe because both only connect `GND` to `GND`
 

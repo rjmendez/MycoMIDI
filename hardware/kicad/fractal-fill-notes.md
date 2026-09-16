@@ -52,7 +52,8 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
    selected family per region (`moore`, `peano`, `hilbert` at present)
    instead of placing one fixed-size fractal in each area
 6. routes the real-board copper variants only from anchor points already on the
-   real `GND` network, then emits every new segment/via on that same KiCad net
+   real `GND` network, then emits solid `GND` zones (plus short `GND` zone
+   connector corridors where needed) on both copper layers
 
 The result is still approximate rather than polygon-perfect: the free-space
 detector is grid/rectangle based, not a general polygon boolean engine. But it
@@ -76,21 +77,19 @@ Only the decorative copper segments and their stitching vias use those nets.
 On the demo board there are no other real functional nets at all, so the art nets
 cannot accidentally short to any circuit net in this demo.
 
-## Why thin traces instead of a poured plane
+## Why solid copper on the real board
 
-This implementation uses dense fractal **track geometry** rather than a large
-poured polygonal copper plane. That keeps the generated file simple,
-human-auditable, and predictable in the text-based workflow while still
-exercising both copper layers, mask openings, and via-connected continuity.
+The demo profile still uses dense fractal **track geometry** because it is a
+standalone art sandbox with isolated dummy nets.
 
-On the real ADS131M08 board, the copper art width is intentionally smaller than
-the functional routing width. The fractal is decorative GND augmentation, not a
-high-current power feed and not a precision impedance-controlled signal, so
-there is no reason to make it as fat as the real traces.
+The real ADS131M08 profile is different: its copper fill is now emitted as
+**solid GND zones/polygons**, not sparse decorative trace skeletons. The
+fractal is used to shape the zone boundary, while the interior remains filled
+like ordinary poured copper inside the detected free-space rectangle.
 
-If you later want truly flood-filled fractal polygons, build that on top of the
-same region-detection pipeline only after validating the polygon boolean/offset
-math carefully.
+Where a free-space island does not already touch an existing GND feature, the
+script adds a short solid zone corridor back to an existing GND anchor so the
+fill stays electrically continuous.
 
 ## Honest caveats
 

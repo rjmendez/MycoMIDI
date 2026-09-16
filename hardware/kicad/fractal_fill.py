@@ -38,6 +38,8 @@ ADC_COPPER_TILE_MARGIN_MM = 0.45
 ADC_MASK_OPENING_WIDTH_MM = 0.28
 ADC_TOP_LEVEL_EMBEDDED_FONTS = "\n\t(embedded_fonts no)\n"
 ADC_REAL_BOARD_CURVES = ("moore", "peano", "hilbert")
+ADC_BOUNDARY_SIDES = ("top", "left", "bottom", "right")
+ADC_COPPER_CONNECTOR_WIDTH_MM = 0.8
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,7 @@ class CopperRegionPlan:
     path: list[tuple[float, float]]
     exposed: bool
     curve_name: str
+    boundary_side: str
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,66 @@ def build_via(point: tuple[float, float], *, net_id: int, size: float, drill: fl
         f"\t\t(drill {format_mm(drill)})\n"
         '\t\t(layers "F.Cu" "B.Cu")\n'
         f"\t\t(net {net_id})\n"
+        f'\t\t(uuid "{uuid.uuid4()}")\n'
+        "\t)\n"
+    )
+
+
+def build_zone(
+    polygon_points: list[tuple[float, float]],
+    *,
+    net_id: int,
+    net_name: str,
+    layer: str,
+    clearance: float,
+    min_thickness: float,
+    priority: int | None = None,
+) -> str:
+    if len(polygon_points) < 3:
+        raise ValueError("zone polygon needs at least 3 points")
+    pts = "\n".join(f"\t\t\t\t(xy {format_mm(x)} {format_mm(y)})" for x, y in polygon_points)
+    priority_block = f"\t\t(priority {priority})\n" if priority is not None else ""
+    return (
+        "\t(zone\n"
+        f"\t\t(net {net_id})\n"
+        f'\t\t(net_name "{net_name}")\n'
+        f'\t\t(layer "{layer}")\n'
+        f'\t\t(uuid "{uuid.uuid4()}")\n'
+        "\t\t(hatch edge 0.5)\n"
+        f"{priority_block}"
+        "\t\t(connect_pads yes\n"
+        f"\t\t\t(clearance {format_mm(clearance)})\n"
+        "\t\t)\n"
+        f"\t\t(min_thickness {format_mm(min_thickness)})\n"
+        "\t\t(filled_areas_thickness no)\n"
+        "\t\t(fill\n"
+        "\t\t\t(thermal_gap 0.5)\n"
+        "\t\t\t(thermal_bridge_width 0.5)\n"
+        "\t\t)\n"
+        "\t\t(polygon\n"
+        "\t\t\t(pts\n"
+        f"{pts}\n"
+        "\t\t\t)\n"
+        "\t\t)\n"
+        "\t)\n"
+    )
+
+
+def build_filled_polygon(points: list[tuple[float, float]], *, layer: str) -> str:
+    if len(points) < 3:
+        raise ValueError("filled polygon needs at least 3 points")
+    pts = "\n".join(f"\t\t\t(xy {format_mm(x)} {format_mm(y)})" for x, y in points)
+    return (
+        "\t(gr_poly\n"
+        "\t\t(pts\n"
+        f"{pts}\n"
+        "\t\t)\n"
+        "\t\t(stroke\n"
+        "\t\t\t(width 0)\n"
+        "\t\t\t(type solid)\n"
+        "\t\t)\n"
+        "\t\t(fill solid)\n"
+        f'\t\t(layer "{layer}")\n'
         f'\t\t(uuid "{uuid.uuid4()}")\n'
         "\t)\n"
     )
@@ -835,6 +898,10 @@ def choose_tile_count(span_mm: float) -> int:
     return max(1, count)
 
 
+def rect_center(rect: Rect) -> tuple[float, float]:
+    return ((rect.left + rect.right) / 2.0, (rect.bottom + rect.top) / 2.0)
+
+
 def build_tiled_curve(points: list[tuple[float, float]], rect: Rect, *, start_corner: str, margin: float) -> list[tuple[float, float]]:
     cols = choose_tile_count(rect.width)
     rows = choose_tile_count(rect.height)
@@ -862,11 +929,84 @@ def build_tiled_curve(points: list[tuple[float, float]], rect: Rect, *, start_co
     return path
 
 
+def zone_entry_targets(rect: Rect) -> list[tuple[float, float]]:
+    inset = min(1.2, max(0.6, min(rect.width, rect.height) * 0.18))
+    cx, cy = rect_center(rect)
+    return [
+        (rect.left + inset, rect.bottom + inset),
+        (rect.right - inset, rect.bottom + inset),
+        (rect.right - inset, rect.top - inset),
+        (rect.left + inset, rect.top - inset),
+        (cx, cy),
+        (cx, rect.bottom + inset),
+        (cx, rect.top - inset),
+    ]
+
+
+def fractal_zone_outline(rect: Rect, curve_points: list[tuple[float, float]], *, side: str, margin: float) -> list[tuple[float, float]]:
+    band_depth = min(max(2.0, min(rect.width, rect.height) * 0.34), max(2.0, min(rect.width, rect.height) - (2.0 * margin)))
+    if side == "top":
+        band = Rect(rect.left, rect.top - band_depth, rect.right, rect.top)
+        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=False, mirror_y=False)
+        if path[0][0] < path[-1][0]:
+            path.reverse()
+        return [(rect.left, rect.bottom), (rect.right, rect.bottom), (rect.right, rect.top), *path, (rect.left, rect.top)]
+    if side == "bottom":
+        band = Rect(rect.left, rect.bottom, rect.right, rect.bottom + band_depth)
+        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=False, mirror_y=True)
+        if path[0][0] > path[-1][0]:
+            path.reverse()
+        return [(rect.left, rect.bottom), *path, (rect.right, rect.bottom), (rect.right, rect.top), (rect.left, rect.top)]
+    if side == "left":
+        band = Rect(rect.left, rect.bottom, rect.left + band_depth, rect.top)
+        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=False, mirror_y=False)
+        if path[0][1] < path[-1][1]:
+            path.reverse()
+        return [(rect.left, rect.bottom), (rect.right, rect.bottom), (rect.right, rect.top), (rect.left, rect.top), *path]
+    if side == "right":
+        band = Rect(rect.right - band_depth, rect.bottom, rect.right, rect.top)
+        path = map_points_to_rect(curve_points, band, margin=margin, mirror_x=True, mirror_y=False)
+        if path[0][1] > path[-1][1]:
+            path.reverse()
+        return [(rect.left, rect.bottom), (rect.right, rect.bottom), *path, (rect.right, rect.top), (rect.left, rect.top)]
+    raise ValueError(f"unknown boundary side {side!r}")
+
+
+def corridor_zone_polygons(path: list[tuple[float, float]], *, width: float) -> list[list[tuple[float, float]]]:
+    if width <= 0:
+        raise ValueError("corridor width must be positive")
+    half = width / 2.0
+    polygons: list[list[tuple[float, float]]] = []
+    for start, end in zip(path[:-1], path[1:], strict=True):
+        sx, sy = start
+        ex, ey = end
+        if math.isclose(sx, ex):
+            polygons.append(
+                [
+                    (sx - half, min(sy, ey) - half),
+                    (sx + half, min(sy, ey) - half),
+                    (sx + half, max(sy, ey) + half),
+                    (sx - half, max(sy, ey) + half),
+                ]
+            )
+        elif math.isclose(sy, ey):
+            polygons.append(
+                [
+                    (min(sx, ex) - half, sy - half),
+                    (max(sx, ex) + half, sy - half),
+                    (max(sx, ex) + half, sy + half),
+                    (min(sx, ex) - half, sy + half),
+                ]
+            )
+        else:
+            raise ValueError("connector corridor only supports orthogonal paths")
+    return polygons
+
+
 def connector_candidates(anchor: tuple[float, float], target: tuple[float, float]) -> list[list[tuple[float, float]]]:
     ax, ay = anchor
     tx, ty = target
     return [
-        [anchor, target],
         [anchor, (ax, ty), target],
         [anchor, (tx, ay), target],
     ]
@@ -947,18 +1087,13 @@ def route_copper_region(
     copper_width: float,
     via_size: float,
 ) -> tuple[str, float, tuple[float, float], list[tuple[float, float]]] | None:
+    _ = via_size
     for curve_name in curve_names:
-        base_points = generate_curve_points(curve_name)
         best_choice: tuple[float, tuple[float, float], list[tuple[float, float]]] | None = None
-        for start_corner in ("bl", "br", "tl", "tr"):
-            core_path = build_tiled_curve(base_points, rect, start_corner=start_corner, margin=ADC_COPPER_TILE_MARGIN_MM)
-            if not core_path:
-                continue
-            if not via_clear(core_path[-1], size=via_size, clearance=ADC_CLEARANCE_MM, obstacles=obstacles, allowed_net_name=gnd_net_name):
-                continue
-            for anchor in anchors:
+        for anchor in anchors:
+            for target in zone_entry_targets(rect):
                 connector: list[tuple[float, float]] | None = None
-                for candidate in connector_candidates(anchor, core_path[0]):
+                for candidate in connector_candidates(anchor, target):
                     if path_clear(
                         candidate,
                         width=copper_width,
@@ -971,21 +1106,11 @@ def route_copper_region(
                         break
                 if connector is None:
                     continue
-                candidate_path = connector + core_path[1:]
-                if not path_clear(
-                    candidate_path,
-                    width=copper_width,
-                    clearance=ADC_CLEARANCE_MM,
-                    obstacles=obstacles,
-                    allowed_anchor=anchor,
-                    allowed_net_name=gnd_net_name,
-                ):
-                    continue
                 length = sum(math.dist(start, end) for start, end in zip(connector[:-1], connector[1:], strict=True))
                 if length > ADC_MAX_COPPER_CONNECTOR_MM:
                     continue
                 if best_choice is None or length < best_choice[0]:
-                    best_choice = (length, anchor, candidate_path)
+                    best_choice = (length, anchor, connector)
         if best_choice is not None:
             return (curve_name, best_choice[0], best_choice[1], best_choice[2])
     return None
@@ -1072,8 +1197,8 @@ def choose_copper_regions(
             pair = (
                 first[1] + second[1],
                 (
-                    CopperRegionPlan(rect=first_rect, anchor=first[2], path=first[3], exposed=False, curve_name=first[0]),
-                    CopperRegionPlan(rect=second_rect, anchor=second[2], path=second[3], exposed=True, curve_name=second[0]),
+                    CopperRegionPlan(rect=first_rect, anchor=first[2], path=first[3], exposed=False, curve_name=first[0], boundary_side=ADC_BOUNDARY_SIDES[0]),
+                    CopperRegionPlan(rect=second_rect, anchor=second[2], path=second[3], exposed=True, curve_name=second[0], boundary_side=ADC_BOUNDARY_SIDES[1]),
                 ),
             )
             if best_pair is None or pair[0] < best_pair[0]:
@@ -1089,6 +1214,7 @@ def choose_copper_regions(
                 path=path,
                 exposed=(index % 2) == 1,
                 curve_name=curve_name,
+                boundary_side=ADC_BOUNDARY_SIDES[index % len(ADC_BOUNDARY_SIDES)],
             )
         )
     if not any(not plan.exposed for plan in plans):
@@ -1159,6 +1285,7 @@ def build_adc_board_blocks(
     stats = adc_region_stats(clean_text, gnd_net_name=gnd_net_name, copper_width=copper_width, via_size=via_size)
 
     blocks: list[str] = []
+    zone_priority = 1
     silk_regions = [rect for rect in stats.silk_regions if not any(rect.intersects(plan.rect) for plan in stats.copper_regions)]
     silk_start_corners = ("bl", "tr", "br", "tl")
     for index, rect in enumerate(silk_regions):
@@ -1170,12 +1297,61 @@ def build_adc_board_blocks(
         blocks.append(build_graphic_lines(back, width=silk_width, layer="B.SilkS"))
 
     for plan in stats.copper_regions:
-        blocks.append(build_segments(plan.path, width=copper_width, layer="F.Cu", net_id=gnd_net_id))
-        blocks.append(build_segments(plan.path, width=copper_width, layer="B.Cu", net_id=gnd_net_id))
-        blocks.append(build_via(plan.path[-1], net_id=gnd_net_id, size=via_size, drill=via_drill))
+        curve_points = generate_curve_points(plan.curve_name)
+        zone_polygon = fractal_zone_outline(plan.rect, curve_points, side=plan.boundary_side, margin=ADC_COPPER_TILE_MARGIN_MM)
+        corridor_polygons = corridor_zone_polygons(plan.path, width=ADC_COPPER_CONNECTOR_WIDTH_MM)
+        blocks.append(
+            build_zone(
+                zone_polygon,
+                net_id=gnd_net_id,
+                net_name=gnd_net_name,
+                layer="F.Cu",
+                clearance=ADC_CLEARANCE_MM,
+                min_thickness=copper_width,
+                priority=zone_priority,
+            )
+        )
+        zone_priority += 1
+        blocks.append(
+            build_zone(
+                zone_polygon,
+                net_id=gnd_net_id,
+                net_name=gnd_net_name,
+                layer="B.Cu",
+                clearance=ADC_CLEARANCE_MM,
+                min_thickness=copper_width,
+                priority=zone_priority,
+            )
+        )
+        zone_priority += 1
+        for corridor_polygon in corridor_polygons:
+            blocks.append(
+                build_zone(
+                    corridor_polygon,
+                    net_id=gnd_net_id,
+                    net_name=gnd_net_name,
+                    layer="F.Cu",
+                    clearance=ADC_CLEARANCE_MM,
+                    min_thickness=copper_width,
+                    priority=zone_priority,
+                )
+            )
+            zone_priority += 1
+            blocks.append(
+                build_zone(
+                    corridor_polygon,
+                    net_id=gnd_net_id,
+                    net_name=gnd_net_name,
+                    layer="B.Cu",
+                    clearance=ADC_CLEARANCE_MM,
+                    min_thickness=copper_width,
+                    priority=zone_priority,
+                )
+            )
+            zone_priority += 1
         if plan.exposed:
-            blocks.append(build_graphic_lines(plan.path[1:], width=mask_width, layer="F.Mask"))
-            blocks.append(build_graphic_lines(plan.path[1:], width=mask_width, layer="B.Mask"))
+            blocks.append(build_filled_polygon(zone_polygon, layer="F.Mask"))
+            blocks.append(build_filled_polygon(zone_polygon, layer="B.Mask"))
 
     return blocks
 
