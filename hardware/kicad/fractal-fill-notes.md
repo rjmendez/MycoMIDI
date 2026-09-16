@@ -46,14 +46,14 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
    footprint extents, and existing silk/text bounds
 3. grid-scans the real board interior and marks cells free/blocked using the
    same clearance model as the decorative fill (`0.25 mm` local clearance,
-   `0.45 mm` region clearance for copper)
+   `0.35 mm` free-space scan clearance for the visible copper regions)
 4. greedily merges contiguous free cells into candidate rectangles
 5. tiles repeated curve instances across each useful rectangle, rotating the
    selected family per region (`moore`, `peano`, `hilbert` at present)
    instead of placing one fixed-size fractal in each area
 6. routes the real-board copper variants only from anchor points already on the
-   real `GND` network, then emits solid `GND` zones (plus short `GND` zone
-   connector corridors where needed) on both copper layers
+   real `GND` network, then emits solid front-layer `GND` zones (plus short
+   masked `GND` connector corridors where needed)
 7. if `pcbnew` is available, immediately runs KiCad's zone filler and saves the
    resulting `filled_polygon` data back into the `.kicad_pcb` file so renders
    and diffs show actual solid copper rather than hollow zone outlines
@@ -86,18 +86,26 @@ The demo profile still uses dense fractal **track geometry** because it is a
 standalone art sandbox with isolated dummy nets.
 
 The real ADS131M08 profile is different: its copper fill is now emitted as
-**solid GND zones/polygons**, not sparse decorative trace skeletons. The
-fractal is used to shape the zone boundary, while the interior remains filled
-like ordinary poured copper inside the detected free-space rectangle.
+**solid exposed F.Cu GND zones/polygons**, not sparse decorative trace
+skeletons. The fractal is used to shape the zone boundary, while the interior
+remains filled like ordinary poured copper inside the detected free-space
+rectangle.
 
 Where a free-space island does not already touch an existing GND feature, the
 script adds a short solid zone corridor back to an existing GND anchor so the
-fill stays electrically continuous.
+fill stays electrically continuous without turning the visible copper into a
+hollow trace drawing.
 
-The large colored block near the bottom-right render is not a stray rectangle:
-it is the intentionally exposed/unmasked copper-fill variant. In composite SVG
-exports that include mask layers, the corresponding mask opening can look like a
-solid tinted panel unless the copper fill has also been baked into the board.
+Earlier renders looked wrong for two reasons:
+
+- many of the visible decorative regions were still silkscreen-only, so they
+  could only ever appear as hollow line art
+- the one obvious exposed copper island near C5/J3 used only a subtle single
+  boundary perturbation, so it read like a plain rectangle
+
+The current real-board output instead exposes multiple front-layer GND regions,
+uses inward-facing fractal edges so the shape reads in the render, and bakes the
+zone fill before saving.
 
 ## Honest caveats
 

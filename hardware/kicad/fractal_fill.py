@@ -30,17 +30,18 @@ ADC_TILE_MAX_MM = 12.5
 ADC_MIN_SILK_REGION_WIDTH_MM = 4.0
 ADC_MIN_SILK_REGION_HEIGHT_MM = 4.0
 ADC_MIN_SILK_REGION_AREA_MM2 = 40.0
-ADC_MIN_COPPER_REGION_WIDTH_MM = 6.0
-ADC_MIN_COPPER_REGION_HEIGHT_MM = 6.0
-ADC_MIN_COPPER_REGION_AREA_MM2 = 60.0
-ADC_MAX_COPPER_CONNECTOR_MM = 32.0
+ADC_MIN_COPPER_REGION_WIDTH_MM = 4.0
+ADC_MIN_COPPER_REGION_HEIGHT_MM = 4.0
+ADC_MIN_COPPER_REGION_AREA_MM2 = 50.0
+ADC_MAX_COPPER_CONNECTOR_MM = 60.0
 ADC_SILK_TILE_MARGIN_MM = 0.4
 ADC_COPPER_TILE_MARGIN_MM = 0.45
 ADC_MASK_OPENING_WIDTH_MM = 0.28
-ADC_TOP_LEVEL_EMBEDDED_FONTS = "\n\t(embedded_fonts no)\n"
 ADC_REAL_BOARD_CURVES = ("moore", "peano", "hilbert")
 ADC_BOUNDARY_SIDES = ("top", "left", "bottom", "right")
 ADC_COPPER_CONNECTOR_WIDTH_MM = 0.8
+ADC_GENERATED_ZONE_PREFIX = "adc-fractal-fill"
+ADC_EXPOSED_REGION_INSET_MM = 0.6
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,8 @@ class Rect:
         return max(0.0, self.width) * max(0.0, self.height)
 
     def inset(self, margin: float) -> "Rect":
+        if margin <= 0.0 or (2.0 * margin) >= self.width or (2.0 * margin) >= self.height:
+            return self
         return Rect(
             self.left + margin,
             self.bottom + margin,
@@ -317,13 +320,17 @@ def insert_blocks(text: str, *blocks: str) -> str:
 
 
 def extract_blocks(text: str, tag: str) -> list[str]:
-    blocks: list[str] = []
+    return [block for _, _, block in extract_block_spans(text, tag)]
+
+
+def extract_block_spans(text: str, tag: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
     index = 0
     pattern = re.compile(rf"\({re.escape(tag)}(?=[\s])")
     while True:
         match = pattern.search(text, index)
         if not match:
-            return blocks
+            return spans
         start = match.start()
         depth = 0
         for end in range(start, len(text)):
@@ -333,7 +340,8 @@ def extract_blocks(text: str, tag: str) -> list[str]:
             elif char == ")":
                 depth -= 1
                 if depth == 0:
-                    blocks.append(text[start : end + 1])
+                    block = text[start : end + 1]
+                    spans.append((start, end + 1, block))
                     index = end + 1
                     break
         else:
@@ -753,13 +761,24 @@ def build_demo_blocks(
 
 
 def strip_generated_adc_art(text: str) -> str:
-    marker_index = text.rfind(ADC_TOP_LEVEL_EMBEDDED_FONTS)
-    if marker_index < 0:
+    removals: list[tuple[int, int]] = []
+    for start, end, block in extract_block_spans(text, "zone"):
+        if f'(name "{ADC_GENERATED_ZONE_PREFIX}' in block:
+            removals.append((start, end))
+    for start, end, block in extract_block_spans(text, "gr_poly"):
+        layer = layer_name(block)
+        if layer in {"F.Mask", "B.Mask"}:
+            removals.append((start, end))
+    if not removals:
         return text
-    closing_index = text.rfind("\n)")
-    if closing_index < 0:
-        return text
-    return text[: marker_index + len(ADC_TOP_LEVEL_EMBEDDED_FONTS)] + text[closing_index:]
+
+    chunks: list[str] = []
+    cursor = 0
+    for start, end in sorted(removals):
+        chunks.append(text[cursor:start])
+        cursor = end
+    chunks.append(text[cursor:])
+    return "".join(chunks)
 
 
 def parse_board_outline(text: str) -> list[tuple[float, float]]:
@@ -906,6 +925,12 @@ def rect_center(rect: Rect) -> tuple[float, float]:
     return ((rect.left + rect.right) / 2.0, (rect.bottom + rect.top) / 2.0)
 
 
+def bounding_rect(points: list[tuple[float, float]]) -> Rect:
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return Rect(min(xs), min(ys), max(xs), max(ys))
+
+
 def build_tiled_curve(points: list[tuple[float, float]], rect: Rect, *, start_corner: str, margin: float) -> list[tuple[float, float]]:
     cols = choose_tile_count(rect.width)
     rows = choose_tile_count(rect.height)
@@ -974,6 +999,19 @@ def fractal_zone_outline(rect: Rect, curve_points: list[tuple[float, float]], *,
             path.reverse()
         return [(rect.left, rect.bottom), (rect.right, rect.bottom), *path, (rect.right, rect.top), (rect.left, rect.top)]
     raise ValueError(f"unknown boundary side {side!r}")
+
+
+def choose_boundary_side(rect: Rect, board_rect: Rect, index: int) -> str:
+    edge_slack = 1.5
+    if rect.bottom <= board_rect.bottom + edge_slack:
+        return "bottom"
+    if rect.top >= board_rect.top - edge_slack:
+        return "top"
+    if rect.left <= board_rect.left + edge_slack:
+        return "right"
+    if rect.right >= board_rect.right - edge_slack:
+        return "left"
+    return ADC_BOUNDARY_SIDES[index % len(ADC_BOUNDARY_SIDES)]
 
 
 def corridor_zone_polygons(path: list[tuple[float, float]], *, width: float) -> list[list[tuple[float, float]]]:
@@ -1057,12 +1095,6 @@ def gnd_anchor_points(text: str, gnd_net_name: str) -> list[tuple[float, float]]
         for pad_block in extract_blocks(footprint_block, "pad"):
             if f'(net {net_id} "{gnd_net_name}")' not in pad_block:
                 continue
-            layers_match = re.search(r"\(layers ([^\)]*)\)", pad_block)
-            if not layers_match:
-                continue
-            layers = re.findall(r'"([^"]+)"', layers_match.group(1))
-            if "*.Cu" not in layers and not {"F.Cu", "B.Cu"}.issubset(set(layers)):
-                continue
             pad_at = parse_float_list(pad_block, "at") or (0.0, 0.0, 0.0)
             offset_x, offset_y = rotate_point(pad_at[0], pad_at[1], footprint_rotation)
             anchors.append((fx + offset_x, fy + offset_y))
@@ -1145,6 +1177,7 @@ def split_copper_region(rect: Rect) -> list[tuple[Rect, Rect]]:
 def choose_copper_regions(
     regions: list[Rect],
     *,
+    board_rect: Rect,
     anchors: list[tuple[float, float]],
     obstacles: list[Obstacle],
     gnd_net_name: str,
@@ -1201,8 +1234,8 @@ def choose_copper_regions(
             pair = (
                 first[1] + second[1],
                 (
-                    CopperRegionPlan(rect=first_rect, anchor=first[2], path=first[3], exposed=False, curve_name=first[0], boundary_side=ADC_BOUNDARY_SIDES[0]),
-                    CopperRegionPlan(rect=second_rect, anchor=second[2], path=second[3], exposed=True, curve_name=second[0], boundary_side=ADC_BOUNDARY_SIDES[1]),
+                    CopperRegionPlan(rect=first_rect, anchor=first[2], path=first[3], exposed=True, curve_name=first[0], boundary_side=choose_boundary_side(first_rect, board_rect, 0)),
+                    CopperRegionPlan(rect=second_rect, anchor=second[2], path=second[3], exposed=True, curve_name=second[0], boundary_side=choose_boundary_side(second_rect, board_rect, 1)),
                 ),
             )
             if best_pair is None or pair[0] < best_pair[0]:
@@ -1216,14 +1249,12 @@ def choose_copper_regions(
                 rect=rect,
                 anchor=anchor,
                 path=path,
-                exposed=(index % 2) == 1,
+                exposed=True,
                 curve_name=curve_name,
-                boundary_side=ADC_BOUNDARY_SIDES[index % len(ADC_BOUNDARY_SIDES)],
+                boundary_side=choose_boundary_side(rect, board_rect, index),
             )
         )
-    if not any(not plan.exposed for plan in plans):
-        raise ValueError("could not find any anchorable masked GND fill regions")
-    if not any(plan.exposed for plan in plans):
+    if not plans:
         raise ValueError("could not find any anchorable exposed GND fill regions")
     return plans
 
@@ -1237,6 +1268,7 @@ def adc_region_stats(
 ) -> RegionStats:
     clean_text = strip_generated_adc_art(source_text)
     polygon = parse_board_outline(clean_text)
+    board_rect = bounding_rect(polygon)
     obstacles = parse_obstacles(clean_text)
     silk_regions, free_silk_area = scan_free_regions(
         polygon,
@@ -1248,18 +1280,11 @@ def adc_region_stats(
         min_height_mm=ADC_MIN_SILK_REGION_HEIGHT_MM,
         min_area_mm2=ADC_MIN_SILK_REGION_AREA_MM2,
     )
-    copper_rects, free_copper_area = scan_free_regions(
-        polygon,
-        obstacles=obstacles,
-        clearance=ADC_REGION_CLEARANCE_MM,
-        outline_clearance=max(0.0, 0.55 - ADC_COPPER_TILE_MARGIN_MM),
-        step_mm=ADC_GRID_STEP_MM,
-        min_width_mm=ADC_MIN_COPPER_REGION_WIDTH_MM,
-        min_height_mm=ADC_MIN_COPPER_REGION_HEIGHT_MM,
-        min_area_mm2=ADC_MIN_COPPER_REGION_AREA_MM2,
-    )
+    copper_rects = [rect for rect in silk_regions if rect.width >= ADC_MIN_COPPER_REGION_WIDTH_MM and rect.height >= ADC_MIN_COPPER_REGION_HEIGHT_MM and rect.area >= ADC_MIN_COPPER_REGION_AREA_MM2]
+    free_copper_area = sum(rect.area for rect in copper_rects)
     copper_regions = choose_copper_regions(
         copper_rects,
+        board_rect=board_rect,
         anchors=gnd_anchor_points(clean_text, gnd_net_name),
         obstacles=obstacles,
         gnd_net_name=gnd_net_name,
@@ -1290,19 +1315,11 @@ def build_adc_board_blocks(
 
     blocks: list[str] = []
     zone_priority = 1
-    silk_regions = [rect for rect in stats.silk_regions if not any(rect.intersects(plan.rect) for plan in stats.copper_regions)]
-    silk_start_corners = ("bl", "tr", "br", "tl")
-    for index, rect in enumerate(silk_regions):
-        curve_name = preferred_curve_names(index)[0]
-        silk_points = generate_curve_points(curve_name)
-        front = build_tiled_curve(silk_points, rect, start_corner=silk_start_corners[index % len(silk_start_corners)], margin=ADC_SILK_TILE_MARGIN_MM)
-        back = build_tiled_curve(silk_points, rect, start_corner=silk_start_corners[(index + 1) % len(silk_start_corners)], margin=ADC_SILK_TILE_MARGIN_MM)
-        blocks.append(build_graphic_lines(front, width=silk_width, layer="F.SilkS"))
-        blocks.append(build_graphic_lines(back, width=silk_width, layer="B.SilkS"))
 
     for plan_index, plan in enumerate(stats.copper_regions):
         curve_points = generate_curve_points(plan.curve_name)
-        zone_polygon = fractal_zone_outline(plan.rect, curve_points, side=plan.boundary_side, margin=ADC_COPPER_TILE_MARGIN_MM)
+        zone_rect = plan.rect.inset(ADC_EXPOSED_REGION_INSET_MM)
+        zone_polygon = fractal_zone_outline(zone_rect, curve_points, side=plan.boundary_side, margin=ADC_COPPER_TILE_MARGIN_MM)
         corridor_polygons = corridor_zone_polygons(plan.path, width=ADC_COPPER_CONNECTOR_WIDTH_MM)
         blocks.append(
             build_zone(
@@ -1314,19 +1331,6 @@ def build_adc_board_blocks(
                 min_thickness=copper_width,
                 priority=zone_priority,
                 name=f"adc-fractal-fill-region-{plan_index}-front",
-            )
-        )
-        zone_priority += 1
-        blocks.append(
-            build_zone(
-                zone_polygon,
-                net_id=gnd_net_id,
-                net_name=gnd_net_name,
-                layer="B.Cu",
-                clearance=ADC_CLEARANCE_MM,
-                min_thickness=copper_width,
-                priority=zone_priority,
-                name=f"adc-fractal-fill-region-{plan_index}-back",
             )
         )
         zone_priority += 1
@@ -1344,22 +1348,8 @@ def build_adc_board_blocks(
                 )
             )
             zone_priority += 1
-            blocks.append(
-                build_zone(
-                    corridor_polygon,
-                    net_id=gnd_net_id,
-                    net_name=gnd_net_name,
-                    layer="B.Cu",
-                    clearance=ADC_CLEARANCE_MM,
-                    min_thickness=copper_width,
-                    priority=zone_priority,
-                    name=f"adc-fractal-fill-corridor-{plan_index}-{corridor_index}-back",
-                )
-            )
-            zone_priority += 1
         if plan.exposed:
             blocks.append(build_filled_polygon(zone_polygon, layer="F.Mask"))
-            blocks.append(build_filled_polygon(zone_polygon, layer="B.Mask"))
 
     return blocks
 

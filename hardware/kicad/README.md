@@ -222,14 +222,14 @@ The real-board profile:
   families (`moore`, `peano`, `hilbert`) across those detected regions
 - confirms the routed board already defines `GND` in the KiCad net table and
   uses that real net id for every decorative copper zone/corridor
-- emits the real-board copper as solid poured `GND` zones whose boundaries are
-  fractalized, rather than as sparse decorative trace skeletons
+- emits the real-board copper as solid exposed front-layer `GND` zones whose
+  boundaries are fractalized, rather than as sparse decorative trace skeletons
 - routes the copper variants only from existing `GND` anchors, so every new
   copper object remains a `GND`-to-`GND` addition
 - when `pcbnew` is available, immediately refills those zones and saves the
   computed `filled_polygon` data back into the board file
-- leaves the masked/tented and exposed/unmasked copper variants electrically
-  safe because both only connect `GND` to `GND`
+- keeps the visible exposed copper and the hidden connector corridors
+  electrically safe because both only connect `GND` to `GND`
 
 ### Current status
 
@@ -239,10 +239,10 @@ The real-board profile:
 - The previous handwritten routing pass created many same-layer crossings and
   shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
   produces a clean DRC on this board.
-- The real ADS131M08 board now also carries decorative multi-curve fill on
-  `F.Cu`/`B.Cu`/silkscreen; the copper art is tied to the existing `GND` net,
-  not isolated on dummy art-only nets.
-- C5/C6 silkscreen reference labels are placed explicitly in the generator so
-  they stay readable and off the capacitor pads/traces after autorouting.
+- The real ADS131M08 board now carries decorative multi-curve exposed copper on
+  `F.Cu`; the visible art is tied to the existing `GND` net, not isolated on
+  dummy art-only nets.
+- The checked-in C5 reference position is offset to keep the exposed copper
+  clear and preserve a zero-violation DRC.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
   checked-in `adc_board_8ch.kicad_pcb`.
