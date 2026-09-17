@@ -1339,6 +1339,7 @@ def _paths_to_geometry(
     bounds: tuple[float, float, float, float],
     width_mm: float,
     region,
+    cap_style: int = 1,
 ):
     polygons = []
     path_count = 0
@@ -1347,7 +1348,7 @@ def _paths_to_geometry(
         if len(coords) < 2:
             continue
         line = LineString(coords)
-        polygons.append(line.buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION))
+        polygons.append(line.buffer(width_mm / 2.0, cap_style=cap_style, join_style=1, resolution=ARC_RESOLUTION))
         path_count += 1
     if not polygons:
         return GeometryCollection(), 0
@@ -1436,6 +1437,7 @@ def _truchet_region_geometry(region, *, seed: int, width_mm: float):
         bounds=bounds,
         width_mm=width_mm,
         region=region,
+        cap_style=2,
     )
 
 
@@ -1561,10 +1563,12 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
         truchet_geometry, truchet_segments = _truchet_region_geometry(
             truchet_mask,
             seed=23 if config.label == "front" else 41,
-            width_mm=max(config.stripe_width_mm * 0.96, 0.36),
+            width_mm=max(config.stripe_width_mm * 0.70, 0.28),
         )
         if not truchet_geometry.is_empty:
-            replacement_masks.append(truchet_mask)
+            replacement_masks.append(
+                truchet_geometry.buffer(config.stripe_width_mm * 0.78, join_style=1, resolution=ARC_RESOLUTION).intersection(truchet_mask).buffer(0)
+            )
             replacement_parts.append(truchet_geometry)
             pattern_segments += truchet_segments
 
@@ -1576,7 +1580,9 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
             width_mm=max(config.stripe_width_mm * 0.68, 0.24),
         )
         if not venation_geometry.is_empty:
-            replacement_masks.append(venation_mask)
+            replacement_masks.append(
+                venation_geometry.buffer(config.stripe_width_mm * 0.60, join_style=1, resolution=ARC_RESOLUTION).intersection(venation_mask).buffer(0)
+            )
             replacement_parts.append(venation_geometry)
             pattern_segments += venation_segments
 
