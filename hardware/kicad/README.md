@@ -24,11 +24,11 @@ footprints in environments where the full KiCad Python API is unavailable.
 See [`lib/THIRD_PARTY_LICENSES.md`](lib/THIRD_PARTY_LICENSES.md) for upstream
 provenance and license texts.
 
-
 ## Prerequisites
 
 - Docker installed and working for the current user
 - The repo checked out locally
+- Python 3 for the SKiDL netlist generator
 
 ## Wrapper
 
@@ -58,17 +58,40 @@ If you want to mount a different directory, use `--workdir`:
 `hardware/kicad/demo/` contains a tiny schematic and PCB used to prove the
 Docker wrapper works end-to-end.
 
-Expected behavior from the repo root:
+## ADS131M08 board generator
 
-```bash
-./scripts/kicad-cli.sh sch erc hardware/kicad/demo/demo.kicad_sch --format json
-./scripts/kicad-cli.sh pcb drc hardware/kicad/demo/demo.kicad_pcb --format json --exit-code-violations
-```
+The repository now includes a real ADS131M08-based 8-channel board flow:
 
-On a clean checkout with Docker available, both commands should complete and
-write JSON reports in the mounted working directory. If you run them from the
-repo root as shown above, KiCad writes `demo-erc.json` and `demo-drc.json` to
-the repo root unless you pass `--output` or use `--workdir hardware/kicad/demo`.
+- `hardware/kicad/ads131m08_skidl.py` — shared SKiDL part/templates
+- `hardware/kicad/generate_channel.py` — single-channel prototype using the real ADS131M08 pinout
+- `hardware/kicad/generate_board.py` — 8-channel ADS131M08 netlist generator
+- `hardware/kicad/build_adc_board_layout.py` — KiCad/`pcbnew` script that imports the generated netlist, places the board, and exports a Freerouting-ready DSN
+- `scripts/autoroute-adc-board.sh` — reproducible KiCad → Freerouting → KiCad pipeline that writes the final routed PCB
+- `hardware/kicad/adc_board/adc_board_8ch.net` — generated SKiDL netlist
+- `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb` — generated PCB layout
+
+### What is modeled
+
+- one real `ADS131M08` TQFP-32 (`Package_QFP:TQFP-32_7x7mm_P0.8mm`)
+- all eight differential input pairs: `AIN0P/N` through `AIN7P/N`
+- SPI header: `CS`, `SCLK`, `DIN`, `DOUT`, `DRDY`
+- power/control header: `AVDD`, `DVDD`, `GND`, `CLKIN`, `SYNC_RESET`
+- supply support caps: `100n + 1u` on `AVDD` and `DVDD`
+- `REFIN` capacitor and `CAP` LDO capacitor
+- one 2x8 electrode header following the documented MycoMIDI convention:
+  - `CHx_REC -> AINxP`
+  - `CHx_REF -> AINxN`
+
+### Pinout note
+
+`generate_board.py` uses the ADS131M08 TQFP-32 pin numbers from TI datasheet
+SBAS950B Rev. B, cross-checked against the Figure 5-1 top-view pin diagram as
+well as Table 5-1. The actual package is a real four-side TQFP-32 footprint
+(`Package_QFP:TQFP-32_7x7mm_P0.8mm`), not a two-row/DIP-style abstraction. It
+exposes `REFIN` and `CAP`
+(not separate `REFP` / `REFN` pins), so the SKiDL netlist uses a readability
+alias where `REFP` lands on `REFIN` and the return side is the common ground
+node.
 
 ## Fractal routing experiment
 
@@ -123,22 +146,6 @@ KiCad assets, and those assets are now tracked here for the hardware design.
 They are candidates for 4-channel, 8-channel, and 16-channel electrode
 connector breakouts as the ADS131M08 hardware scales beyond the first module.
 
-## SKiDL netlist generators
-
-This directory also includes inline SKiDL scripts for electrode-side schematic
-generation without requiring KiCad symbol libraries:
-
-- `generate_channel.py`: one-channel proof of concept
-- `generate_board.py`: 8-channel electrode-board base schematic
-
-Both follow the documented ADS131M08 input semantics from
-`hardware/adc-module.md` and the connector conventions from
-`hardware/pin-board.md`:
-
-- recording electrode -> `AINxP`
-- reference electrode -> `AINxN`
-- never wire an electrode to the ADC `REFIN`/`REFOUT` reference pins
-
 ### Setup
 
 From the repo root:
@@ -150,20 +157,141 @@ pip install skidl kiutils kicad-skip
 python -c "import skidl, kiutils, skip"
 ```
 
-### Run
+### Generate the netlist
 
 ```bash
 . hardware/kicad/.venv/bin/activate
-python hardware/kicad/generate_channel.py
 python hardware/kicad/generate_board.py
 ```
 
-### Outputs
+### Generate the placed PCB + DSN
 
-- `hardware/kicad/single_channel_prototype.net`
-- `hardware/kicad/electrode_board_8ch.net`
+`build_adc_board_layout.py` needs KiCad's `pcbnew` Python module, so run it in
+the pinned KiCad container. It writes both a placed KiCad board and a Specctra
+DSN for Freerouting:
 
-`generate_board.py` maps all eight `AINxP/AINxN` differential pairs to one
-16-pin `CONN_02X08`-style header footprint and leaves the future driven-ground
-/ bias path as a clearly labeled `BIAS_DRIVE_TODO` placeholder net stubbed to
-`TP1`.
+```bash
+docker run --rm -v "$PWD:/work" -w /work \
+  kicad/kicad:9.0 \
+  python3 hardware/kicad/build_adc_board_layout.py \
+    --output hardware/kicad/adc_board/adc_board_8ch_unrouted.kicad_pcb \
+    --dsn-output hardware/kicad/adc_board/adc_board_8ch_unrouted.dsn
+```
+
+### Autoroute with Freerouting
+
+The clean routed board is now produced with Freerouting rather than the prior
+handwritten point-to-point router:
+
+```bash
+./scripts/autoroute-adc-board.sh
+```
+
+### Validate with DRC
+
+```bash
+./scripts/kicad-cli.sh pcb drc \
+  --format json \
+  --output hardware/kicad/adc_board/adc_board_8ch-drc.json \
+  --exit-code-violations \
+  hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+```
+
+### Fractal dead-space fill on the real ADC board
+
+The repository also includes `hardware/kicad/fractal_fill.py`, which places
+decorative dead-space fill on the real ADS131M08 board while staying on the
+board's actual `GND` net.
+
+Run it in-place on the checked-in routed board:
+
+```bash
+python3 hardware/kicad/fractal_fill.py \
+  --profile adc-board-gnd \
+  --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+```
+
+The real-board profile:
+
+- reads the real `Edge.Cuts` outline through `pcbnew` and insets it to define a
+  true full-board interior polygon
+- unions real obstacles with `shapely` per layer: exact pad polygons, routed
+  track/via copper, and each footprint courtyard (falling back to body bounds
+  only if a courtyard is missing)
+- generates dense self-avoiding maze corridors across nearly the full open
+  board area on both `F.Cu` and `B.Cu`, then swaps broad irregular swaths over
+  to Truchet-weave and venation/branch textures plus a few phyllotaxis/rosette
+  accents
+- buffers the surviving line-art paths into isolated decorative copper islands
+  and writes them back as filled `gr_poly` copper graphics, so the art does not
+  need to bridge back to `GND` anchors or merge into one connected pour
+- leaves routed copper untouched while filling the remaining visual dead space
+  with a denser maze/organic texture intended to visually bury the real traces
+
+### Current status
+
+- The board file is a real KiCad PCB with outline, placed footprints, and a
+  Freerouting-generated two-layer route.
+- The ADS131M08 pinout is datasheet-sourced for the TQFP-32 package.
+- The previous handwritten routing pass created many same-layer crossings and
+  shorts; the flow now exports DSN and imports a Freerouting `.ses`, which
+  produces a clean DRC on this board.
+- The real ADS131M08 board now carries a continuous `GND` copper background on
+  `F.Cu` with tiled negative-space fractal/maze cutouts, not isolated dummy
+  art-only nets and not the earlier rectangle-and-corridor sticker layout.
+- `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
+  checked-in `adc_board_8ch.kicad_pcb`.
+
+### Fractal signal rerouting on the real ADC board
+
+`hardware/kicad/fractal_signal_router.py` now applies the **trace-hiding visual
+pass** on the real `adc_board_8ch.kicad_pcb`: relative to the `733533b`
+baseline it procedurally reroutes four additional non-timing-critical analog
+`B.Cu` runs (`AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`) plus five `F.Cu` runs
+(`AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`), while preserving the existing
+five rerouted AIN nets (`AIN0N`, `AIN1P`, `AIN2P`, `AIN3P`, `AIN5P`). A later
+verified pass tightens `AIN0P`, `AIN2N`, and `AIN3P` into the same
+orthogonal maze-corridor style already used by `AIN5P`.
+
+Run it on top of the `733533b` board, regenerate the decorative weave so the
+new traces get fresh clearance cutouts, then re-run DRC:
+
+```bash
+python3 hardware/kicad/fractal_signal_router.py \
+  --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --nets AIN0P AIN2N AIN3N AIN4N AIN1N AIN4P AIN5N AIN6N AIN6P
+
+python3 - <<'PY'
+from pathlib import Path
+from adc_texture_fill import apply_continuous_texture_fill
+
+stats = apply_continuous_texture_fill(
+    Path("hardware/kicad/adc_board/adc_board_8ch.kicad_pcb"),
+    gnd_net_name="GND",
+)
+for layer in stats.layer_stats:
+    print(layer.layer_name, round(layer.copper_coverage_ratio, 4))
+PY
+
+./scripts/kicad-cli.sh pcb drc \
+  --format json \
+  --output hardware/kicad/adc_board/adc_board_8ch-drc.json \
+  --exit-code-violations \
+  hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+```
+
+The checked-in branch now contains fourteen procedurally rerouted AIN nets:
+
+- inherited light reroutes: `AIN0N`, `AIN1P`, `AIN2P`
+- new v2 light reroutes: `AIN3N`, `AIN4N`
+- upgraded maze-corridor reroutes: `AIN0P`, `AIN2N`, `AIN3P`, `AIN5P`
+- new v3 front-layer reroutes: `AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`
+- untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
+  `DOUT`, `AVDD`, `DVDD`, `REFP`, `CAP`, `AIN7N`, and `AIN7P`
+- rerouting additional traces cleanly now requires re-running
+  `adc_texture_fill.py` so the decorative copper islands clear the new routes
+
+See `hardware/kicad/fractal-signal-routing-notes.md` for the exact net/family
+mapping and the verification method beyond plain DRC.

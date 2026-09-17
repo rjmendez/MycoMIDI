@@ -1,55 +1,43 @@
-from pathlib import Path
+from __future__ import annotations
 
-from skidl import ERC, Net, Part, Pin, SKIDL, TEMPLATE, generate_netlist
-from skidl.pin import pin_types
+from skidl import Net
 
-channel_count = 1
-output_path = Path(__file__).with_name("single_channel_prototype.net")
-
-
-def make_template(name: str, ref_prefix: str, footprint: str, pins: list[Pin]) -> Part:
-    return Part(
-        name=name,
-        tool=SKIDL,
-        dest=TEMPLATE,
-        ref_prefix=ref_prefix,
-        footprint=footprint,
-        pins=pins,
-    )
+from ads131m08_skidl import (
+    SINGLE_CHANNEL_NETLIST,
+    connect_standard_support,
+    make_ads131m08_template,
+    make_capacitor_template,
+    make_electrode_pair_template,
+    make_power_header_template,
+    make_spi_header_template,
+    write_netlist,
+)
 
 
 def main() -> None:
-    adc_channel = make_template(
-        "ADS131M08_CH",
-        "U",
-        "Package_QFP:TQFP-32_7x7mm_P0.8mm",
-        [
-            Pin(num="1", name="AINP", func=pin_types.INPUT),
-            Pin(num="2", name="AINN", func=pin_types.INPUT),
-        ],
-    )
-    electrode_pair = make_template(
-        "ELECTRODE_PAIR",
-        "J",
-        "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
-        [
-            Pin(num="1", name="REC", func=pin_types.PASSIVE),
-            Pin(num="2", name="REF", func=pin_types.PASSIVE),
-        ],
+    adc = make_ads131m08_template()(value="ADS131M08", tag="adc")
+    electrode_pair = make_electrode_pair_template()(value="CH0_PAIR", tag="electrode_pair")
+    spi_header = make_spi_header_template()(value="SPI_HOST", tag="spi_host")
+    power_header = make_power_header_template()(value="PWR_CTRL", tag="pwr_ctrl")
+    cap_template = make_capacitor_template()
+
+    nets = connect_standard_support(
+        adc,
+        spi_header=spi_header,
+        power_header=power_header,
+        cap_template=cap_template,
     )
 
-    for channel in range(channel_count):
-        adc = adc_channel(tag=f"adc_ch{channel}")
-        connector = electrode_pair(tag=f"electrode_ch{channel}")
-        ainp = Net(f"AIN{channel}P")
-        ainn = Net(f"AIN{channel}N")
-        ainp += adc["AINP"], connector["REC"]
-        ainn += adc["AINN"], connector["REF"]
+    nets["AIN0P"] = nets.get("AIN0P") or Net("AIN0P")
+    nets["AIN0N"] = nets.get("AIN0N") or Net("AIN0N")
+    nets["AIN0P"] += adc["AIN0P"], electrode_pair["REC"]
+    nets["AIN0N"] += adc["AIN0N"], electrode_pair["REF"]
 
-    ERC()
-    generate_netlist(file_=str(output_path), do_backup=False)
+    output_path = write_netlist(SINGLE_CHANNEL_NETLIST)
     print(f"Wrote {output_path}")
-    print("Each channel maps recording -> AINxP and shared reference -> AINxN.")
+    print("Single-channel prototype uses the real ADS131M08 pinout, plus shared SPI/power support.")
+    print("Channel 0 maps recording -> AIN0P and passive reference -> AIN0N.")
+    print("REFP net aliases the actual ADS131M08 REFIN pin; the return side is GND/REFN-equivalent.")
 
 
 if __name__ == "__main__":
