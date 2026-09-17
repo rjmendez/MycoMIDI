@@ -1482,7 +1482,8 @@ def main() -> int:
         )
         print(
             f"continuous texture zone: 1 zone object with {stats.outer_rings} outer polygons, "
-            f"{stats.holes} holes, ~{stats.exposed_area_mm2:.0f} mm^2 textured copper"
+            f"{stats.holes} holes, ~{stats.exposed_area_mm2:.0f} mm^2 textured copper "
+            f"(~{stats.copper_coverage_ratio * 100.0:.1f}% of {stats.available_area_mm2:.0f} mm^2 open area)"
         )
         print(f"maze motif source: {stats.maze_motif}")
         return 0
