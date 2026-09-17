@@ -38,7 +38,7 @@ TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 1.15
 FRONT_STRIPE_PITCH_MM = 0.82
-FRONT_STRIPE_WIDTH_MM = 0.465
+FRONT_STRIPE_WIDTH_MM = 0.478
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
 FRONT_STRIPE_WAVE_LENGTH_MM = 10.8
 BACK_STRIPE_PITCH_MM = 0.80
@@ -1594,11 +1594,7 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
             width_mm=max(config.stripe_width_mm * 0.38, 0.17),
         )
         if not truchet_geometry.is_empty:
-            replacement_masks.append(
-                truchet_geometry.buffer(max(TRUCHET_TILE_MM * 0.42, config.stripe_width_mm * 1.2), join_style=1, resolution=ARC_RESOLUTION)
-                .intersection(truchet_mask)
-                .buffer(0)
-            )
+            replacement_masks.append(truchet_mask)
             replacement_parts.append(truchet_geometry)
             pattern_segments += truchet_segments
 

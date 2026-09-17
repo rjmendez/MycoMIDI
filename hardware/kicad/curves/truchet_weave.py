@@ -182,6 +182,60 @@ def _endpoint_key(point: Point, columns: int, rows: int) -> tuple[int, int]:
     return (round(raw_x * 1_000_000), round(raw_y * 1_000_000))
 
 
+def _cross(ax: float, ay: float, bx: float, by: float, cx: float, cy: float) -> float:
+    return ((bx - ax) * (cy - ay)) - ((by - ay) * (cx - ax))
+
+
+def _point_on_segment(point: Point, start: Point, end: Point, *, eps: float = 1e-9) -> bool:
+    px, py = point
+    ax, ay = start
+    bx, by = end
+    if abs(_cross(ax, ay, bx, by, px, py)) > eps:
+        return False
+    return (
+        min(ax, bx) - eps <= px <= max(ax, bx) + eps
+        and min(ay, by) - eps <= py <= max(ay, by) + eps
+    )
+
+
+def _segment_intersection_kind(a0: Point, a1: Point, b0: Point, b1: Point, *, eps: float = 1e-9) -> str | None:
+    shared = {_point_key(a0), _point_key(a1)} & {_point_key(b0), _point_key(b1)}
+    d1 = _cross(*a0, *a1, *b0)
+    d2 = _cross(*a0, *a1, *b1)
+    d3 = _cross(*b0, *b1, *a0)
+    d4 = _cross(*b0, *b1, *a1)
+
+    if (
+        ((d1 > eps and d2 < -eps) or (d1 < -eps and d2 > eps))
+        and ((d3 > eps and d4 < -eps) or (d3 < -eps and d4 > eps))
+    ):
+        return "cross"
+
+    for point in (b0, b1):
+        if _point_on_segment(point, a0, a1, eps=eps):
+            return None if _point_key(point) in shared else "touch"
+    for point in (a0, a1):
+        if _point_on_segment(point, b0, b1, eps=eps):
+            return None if _point_key(point) in shared else "touch"
+    return None
+
+
+def _path_has_crossings(paths: list[list[Point]]) -> bool:
+    segments: list[tuple[int, int, Point, Point]] = []
+    for path_index, path in enumerate(paths):
+        for segment_index in range(len(path) - 1):
+            segments.append((path_index, segment_index, path[segment_index], path[segment_index + 1]))
+
+    for index, (path_a, seg_a, a0, a1) in enumerate(segments):
+        for path_b, seg_b, b0, b1 in segments[index + 1 :]:
+            if path_a == path_b and abs(seg_a - seg_b) <= 1:
+                continue
+            kind = _segment_intersection_kind(a0, a1, b0, b1)
+            if kind is not None:
+                return True
+    return False
+
+
 def _self_test(columns: int = 8, rows: int = 6, seed: int = 11) -> None:
     arcs = truchet_weave_points(columns, rows, seed=seed)
     if not arcs:
@@ -218,7 +272,10 @@ def _self_test(columns: int = 8, rows: int = 6, seed: int = 11) -> None:
             if block in ((0, 1, 1, 0), (1, 0, 0, 1)):
                 raise AssertionError(f"checkerboard block survived at row={row} column={column}")
 
-    print(f"columns={columns} rows={rows} paths={len(arcs)} endpoints_aligned=True no_checkerboards=True")
+    if _path_has_crossings(arcs):
+        raise AssertionError("centerline crossings detected in traced Truchet weave")
+
+    print(f"columns={columns} rows={rows} paths={len(arcs)} endpoints_aligned=True no_checkerboards=True no_crossings=True")
 
 
 if __name__ == "__main__":
