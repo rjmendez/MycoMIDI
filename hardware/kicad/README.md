@@ -230,9 +230,7 @@ The real-board profile:
 - replaces the old `adc-fractal-fill-region-*` / `adc-fractal-fill-corridor-*`
   sticker zones with one new front-copper `GND` zone object carrying multiple
   polygon outlines/holes as needed
-- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean,
-  and now also places a matching top-silkscreen fractal/maze overlay in the
-  broad open areas so the rendered board still reads as visibly organic
+- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean
 - refills the zone with `pcbnew` immediately, baking fresh `filled_polygon`
   data back into the checked-in `.kicad_pcb` file
 
@@ -247,8 +245,6 @@ The real-board profile:
 - The real ADS131M08 board now carries a continuous `GND` copper background on
   `F.Cu` with tiled negative-space fractal/maze cutouts, not isolated dummy
   art-only nets and not the earlier rectangle-and-corridor sticker layout.
-- The checked-in C5 reference position is offset to keep the exposed copper
-  clear and preserve a zero-violation DRC.
 - `scripts/autoroute-adc-board.sh` is the supported regeneration path for the
   checked-in `adc_board_8ch.kicad_pcb`.
 
