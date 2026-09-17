@@ -31,11 +31,11 @@ TEXTURE_LINE_WIDTH_MM = 0.24
 TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 2.4
-MAZE_GRID_PITCH_MM = 3.4
+MAZE_GRID_PITCH_MM = 2.4
 MAZE_GRID_COVERAGE = 0.52
-MAZE_PASS_COUNT = 5
-MAZE_PASS_WIDTH_MM = 0.30
-MAZE_PASS_WIDTH_FINE_MM = 0.24
+MAZE_PASS_COUNT = 8
+MAZE_PASS_WIDTH_MM = 0.25
+MAZE_PASS_WIDTH_FINE_MM = 0.19
 MIN_COMPONENT_AREA_MM2 = 0.8
 MIN_LINE_COMPONENT_AREA_MM2 = 0.04
 MIN_MOTIF_AREA_MM2 = 0.18
@@ -713,126 +713,149 @@ def _line_art_paths(board_interior, open_area, anchors: list[Polygon]) -> list[t
     bounds = (min_x, min_y, max_x, max_y)
 
     coarse_pitch = MAZE_GRID_PITCH_MM
-    offset = (coarse_pitch * 0.5, coarse_pitch * 0.5)
     safe_open_area = open_area.intersection(safe_interior).buffer(0)
-    _coarse_columns, _coarse_rows, cell_points, adjacency = _grid_graph(
-        safe_open_area,
-        bounds,
-        coarse_pitch,
-        offset,
-        MAZE_PASS_WIDTH_MM,
-    )
-    if not cell_points:
-        raise ValueError("coarse open-area grid produced no valid line-art cells")
-
-    components = [component for component in _grid_components(adjacency) if len(component) >= 4]
-    if not components:
-        raise ValueError("coarse open-area grid produced no substantial connected regions")
-
-    anchor_centers = _choose_anchor_centers(anchors, max(MAZE_PASS_COUNT, len(anchors)))
-    anchor_cells: list[tuple[int, int]] = []
-    for anchor_center in anchor_centers:
-        nearest = _nearest_valid_cell(cell_points, anchor_center)
-        if nearest is not None:
-            anchor_cells.append(nearest)
-
-    component_anchor_cells = {
-        id(component): [cell for cell in anchor_cells if cell in component]
-        for component in components
-    }
-    connected_components = [component for component in components if component_anchor_cells[id(component)]]
-    pending_components = [component for component in components if not component_anchor_cells[id(component)]]
-    component_bridge_prefix: dict[int, list[tuple[float, float]]] = {}
-    component_bridge_roots: dict[int, tuple[int, int]] = {}
-    while pending_components:
-        progress = False
-        for component in list(pending_components):
-            best_pair = None
-            best_distance = float("inf")
-            for connected in connected_components:
-                for component_cell in component:
-                    for connected_cell in connected:
-                        distance = math.hypot(
-                            cell_points[component_cell][0] - cell_points[connected_cell][0],
-                            cell_points[component_cell][1] - cell_points[connected_cell][1],
-                        )
-                        if distance < best_distance:
-                            best_distance = distance
-                            best_pair = (connected_cell, component_cell)
-            if best_pair is None or best_distance > 32.0:
-                continue
-            bridge_prefix = _open_area_bridge_points(
-                cell_points[best_pair[0]],
-                cell_points[best_pair[1]],
-                width_mm=MAZE_PASS_WIDTH_FINE_MM,
-                open_area=safe_open_area,
-            )
-            if bridge_prefix is None:
-                continue
-            component_bridge_prefix[id(component)] = bridge_prefix
-            component_bridge_roots[id(component)] = best_pair[1]
-            connected_components.append(component)
-            pending_components.remove(component)
-            progress = True
-        if not progress:
-            break
-
-    total_cells = sum(len(component) for component in components)
-    total_passes = max(MAZE_PASS_COUNT + 2, min(8, max(len(components), int(round(total_cells / 75.0)))))
-    component_quotas = {id(component): 0 for component in components}
-    eligible_components = [component for component in components if len(component) >= 8]
-    base_components = eligible_components or components
-    for component in base_components:
-        component_quotas[id(component)] += 1
-    while sum(component_quotas.values()) < total_passes:
-        target_component = max(
-            base_components,
-            key=lambda component: len(component) / float(component_quotas[id(component)] + 1),
-        )
-        component_quotas[id(target_component)] += 1
-
     paths: list[tuple[list[tuple[float, float]], float]] = []
-    for component_index, component in enumerate(sorted(base_components, key=len, reverse=True)):
-        component_anchor_cells_for_region = component_anchor_cells[id(component)]
-        root_cell = None
-        root_anchor_center = None
-        bridge_prefix = component_bridge_prefix.get(id(component))
-        if component_anchor_cells_for_region:
-            root_cell = component_anchor_cells_for_region[0]
-            root_anchor_center = min(
-                anchor_centers,
-                key=lambda point: math.hypot(cell_points[root_cell][0] - point[0], cell_points[root_cell][1] - point[1]),
-            )
-        elif id(component) in component_bridge_roots:
-            root_cell = component_bridge_roots[id(component)]
-
-        seed_cells = _distributed_component_seeds(
-            component,
-            cell_points,
-            component_quotas[id(component)],
-            anchor_cells=component_anchor_cells_for_region or ([root_cell] if root_cell is not None else []),
+    anchor_centers = _choose_anchor_centers(anchors, max(MAZE_PASS_COUNT, len(anchors)))
+    offsets = (
+        (coarse_pitch * 0.50, coarse_pitch * 0.50),
+        (coarse_pitch * 0.92, coarse_pitch * 0.58),
+        (coarse_pitch * 0.38, coarse_pitch * 0.86),
+    )
+    for offset_index, offset in enumerate(offsets):
+        _coarse_columns, _coarse_rows, cell_points, adjacency = _grid_graph(
+            safe_open_area,
+            bounds,
+            coarse_pitch,
+            offset,
+            MAZE_PASS_WIDTH_FINE_MM,
         )
-        per_path_target = max(12, int((len(component) * MAZE_GRID_COVERAGE) / max(len(seed_cells), 1)))
-        component_adjacency = {cell: [neighbor for neighbor in adjacency[cell] if neighbor in component] for cell in component}
+        if not cell_points:
+            continue
 
-        for seed_index, seed_cell in enumerate(seed_cells):
-            walk_cells = _sparse_component_walk_points(
-                component_adjacency,
-                cell_points,
-                seed=31 + (component_index * 17) + (seed_index * 11),
-                target_steps=per_path_target + (4 if seed_index % 2 else 0),
-                start_cell=seed_cell,
+        components = [component for component in _grid_components(adjacency) if len(component) >= 4]
+        if not components:
+            continue
+
+        anchor_cells: list[tuple[int, int]] = []
+        for anchor_center in anchor_centers:
+            nearest = _nearest_valid_cell(cell_points, anchor_center)
+            if nearest is not None:
+                anchor_cells.append(nearest)
+
+        component_anchor_cells = {
+            id(component): [cell for cell in anchor_cells if cell in component]
+            for component in components
+        }
+        connected_components = [component for component in components if component_anchor_cells[id(component)]]
+        pending_components = [component for component in components if not component_anchor_cells[id(component)]]
+        component_bridge_prefix: dict[int, list[tuple[float, float]]] = {}
+        component_bridge_roots: dict[int, tuple[int, int]] = {}
+        while pending_components:
+            progress = False
+            for component in list(pending_components):
+                best_pair = None
+                best_distance = float("inf")
+                for connected in connected_components:
+                    for component_cell in component:
+                        for connected_cell in connected:
+                            distance = math.hypot(
+                                cell_points[component_cell][0] - cell_points[connected_cell][0],
+                                cell_points[component_cell][1] - cell_points[connected_cell][1],
+                            )
+                            if distance < best_distance:
+                                best_distance = distance
+                                best_pair = (connected_cell, component_cell)
+                if best_pair is None or best_distance > 32.0:
+                    continue
+                bridge_prefix = _open_area_bridge_points(
+                    cell_points[best_pair[0]],
+                    cell_points[best_pair[1]],
+                    width_mm=MAZE_PASS_WIDTH_FINE_MM,
+                    open_area=safe_open_area,
+                )
+                if bridge_prefix is None:
+                    continue
+                component_bridge_prefix[id(component)] = bridge_prefix
+                component_bridge_roots[id(component)] = best_pair[1]
+                connected_components.append(component)
+                pending_components.remove(component)
+                progress = True
+            if not progress:
+                break
+
+        total_cells = sum(len(component) for component in components)
+        component_quotas = {id(component): 0 for component in components}
+        eligible_components = [component for component in components if len(component) >= 6]
+        base_components = eligible_components or components
+        extra_passes = max(4, int(round(total_cells / 70.0)))
+        total_passes = min(16, max(MAZE_PASS_COUNT + 2, len(base_components) + extra_passes))
+        for component in base_components:
+            component_quotas[id(component)] += 1
+        while sum(component_quotas.values()) < total_passes:
+            target_component = max(
+                base_components,
+                key=lambda component: len(component) / float(component_quotas[id(component)] + 1),
             )
-            path_cells = walk_cells
-            if root_cell is not None:
-                bridge_cells = _shortest_grid_path(component_adjacency, root_cell, seed_cell)
-                path_cells = [*bridge_cells, *walk_cells[1:]]
-            scaled = [cell_points[cell] for cell in path_cells]
-            if bridge_prefix is not None:
-                scaled = [*bridge_prefix, *scaled[1:]]
-            if root_anchor_center is not None and scaled and math.hypot(root_anchor_center[0] - scaled[0][0], root_anchor_center[1] - scaled[0][1]) > 0.05:
-                scaled = [root_anchor_center, scaled[0], *scaled[1:]]
-            paths.append((scaled, MAZE_PASS_WIDTH_MM if seed_index == 0 else MAZE_PASS_WIDTH_FINE_MM))
+            component_quotas[id(target_component)] += 1
+
+        for component_index, component in enumerate(sorted(base_components, key=len, reverse=True)):
+            component_anchor_cells_for_region = component_anchor_cells[id(component)]
+            root_cell = None
+            root_anchor_center = None
+            bridge_prefix = component_bridge_prefix.get(id(component))
+            if component_anchor_cells_for_region:
+                root_cell = component_anchor_cells_for_region[0]
+                root_anchor_center = min(
+                    anchor_centers,
+                    key=lambda point: math.hypot(cell_points[root_cell][0] - point[0], cell_points[root_cell][1] - point[1]),
+                )
+            elif id(component) in component_bridge_roots:
+                root_cell = component_bridge_roots[id(component)]
+
+            seed_cells = _distributed_component_seeds(
+                component,
+                cell_points,
+                component_quotas[id(component)],
+                anchor_cells=component_anchor_cells_for_region or ([root_cell] if root_cell is not None else []),
+            )
+            per_path_target = max(12, int((len(component) * MAZE_GRID_COVERAGE) / max(len(seed_cells), 1)))
+            component_adjacency = {cell: [neighbor for neighbor in adjacency[cell] if neighbor in component] for cell in component}
+
+            for seed_index, seed_cell in enumerate(seed_cells):
+                walk_seed = 31 + (offset_index * 100) + (component_index * 17) + (seed_index * 11)
+                walk_target = per_path_target + (4 if seed_index % 2 else 0)
+                try:
+                    walk_cells = _sparse_component_walk_points(
+                        component_adjacency,
+                        cell_points,
+                        seed=walk_seed,
+                        target_steps=walk_target,
+                        start_cell=seed_cell,
+                    )
+                except ValueError:
+                    try:
+                        walk_cells = _sparse_component_walk_points(
+                            component_adjacency,
+                            cell_points,
+                            seed=walk_seed + 5,
+                            target_steps=max(10, walk_target - 6),
+                            start_cell=seed_cell,
+                        )
+                    except ValueError:
+                        continue
+                path_cells = walk_cells
+                if root_cell is not None:
+                    bridge_cells = _shortest_grid_path(component_adjacency, root_cell, seed_cell)
+                    path_cells = [*bridge_cells, *walk_cells[1:]]
+                scaled = [cell_points[cell] for cell in path_cells]
+                if bridge_prefix is not None:
+                    scaled = [*bridge_prefix, *scaled[1:]]
+                if root_anchor_center is not None and scaled and math.hypot(root_anchor_center[0] - scaled[0][0], root_anchor_center[1] - scaled[0][1]) > 0.05:
+                    scaled = [root_anchor_center, scaled[0], *scaled[1:]]
+                paths.append((scaled, MAZE_PASS_WIDTH_MM if seed_index == 0 else MAZE_PASS_WIDTH_FINE_MM))
+
+    if not paths:
+        raise ValueError("coarse open-area grid produced no valid line-art cells")
 
     accent_paths = [points for points, _ in paths if len(points) >= 12]
     if not accent_paths:
@@ -864,10 +887,11 @@ def _write_debug_line_art_svg(debug_path: Path, board_interior, line_paths: list
         '<rect fill="white" x="0" y="0" width="100%" height="100%"/>',
         f'<polyline points="{outline}" fill="none" stroke="#cccccc" stroke-width="0.4"/>',
     ]
+    maze_path_count = max(0, len(line_paths) - 5)
     for index, (points, width_mm) in enumerate(line_paths):
         if len(points) < 2:
             continue
-        color = "#005bbb" if index < (MAZE_PASS_COUNT + 1) else "#cc5500"
+        color = "#005bbb" if index < maze_path_count else "#cc5500"
         polyline = " ".join(f"{x:.3f},{(max_y - y):.3f}" for x, y in points)
         parts.append(
             f'<polyline points="{polyline}" fill="none" stroke="{color}" '
