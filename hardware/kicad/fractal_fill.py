@@ -1385,8 +1385,8 @@ def build_adc_board_blocks(
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Write a KiCad board copy with decorative fractal fill. "
-            "The demo profile uses isolated Hilbert art nets; the adc-board-gnd profile emits closed Koch-derived GND zones."
+            "Write a KiCad board copy with decorative fill. "
+            "The demo profile uses isolated Hilbert art nets; the adc-board-gnd profile emits dense decorative GND stripe zones."
         ),
     )
     parser.add_argument("--profile", choices=("demo", "adc-board-gnd"), default="demo", help="Board profile to decorate.")
@@ -1476,15 +1476,15 @@ def main() -> int:
             f"copper_width={args.copper_width}, silk_width={args.silk_width}, mask_width={args.mask_width}"
         )
         print(f"verified real copper art net: {args.gnd_net_name} (net {stats.gnd_net_id})")
-        print(
-            f"obstacles: {stats.pads} pads, {stats.tracks} tracks, {stats.vias} vias, {stats.footprints} footprint courtyards/body bounds; "
-            f"anchored through {stats.anchor_vias} existing GND vias"
-        )
-        print(
-            f"continuous texture zone: 1 zone object with {stats.outer_rings} outer polygons, "
-            f"{stats.holes} holes, ~{stats.exposed_area_mm2:.0f} mm^2 textured copper "
-            f"(~{stats.copper_coverage_ratio * 100.0:.1f}% of {stats.available_area_mm2:.0f} mm^2 open area)"
-        )
+        print(f"generated {len(stats.layer_stats)} decorative copper layer fills with per-layer obstacle clipping")
+        for layer_stat in stats.layer_stats:
+            print(
+                f"{layer_stat.layer_name}: tag={layer_stat.zone_name}, "
+                f"{layer_stat.stripe_segments} stripe segments, {layer_stat.outer_rings} outer polygons, "
+                f"{layer_stat.holes} holes, ~{layer_stat.exposed_area_mm2:.0f} mm^2 textured copper "
+                f"(~{layer_stat.copper_coverage_ratio * 100.0:.1f}% of {layer_stat.available_area_mm2:.0f} mm^2 open area); "
+                f"obstacles={layer_stat.pads} pads/{layer_stat.tracks} tracks/{layer_stat.vias} vias/{layer_stat.footprints} footprints"
+            )
         print(f"maze motif source: {stats.maze_motif}")
         return 0
 

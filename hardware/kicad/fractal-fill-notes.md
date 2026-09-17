@@ -42,31 +42,20 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
 
 1. parses the actual `Edge.Cuts` loop from the routed KiCad board instead of
    trusting a fixed board-size tuple
-2. reuses the board-text obstacle pass to enumerate pads, tracks, vias,
-   footprint extents, and existing silk/text bounds
-3. grid-scans the real board interior and marks cells free/blocked using the
-   same clearance model as the decorative fill (`0.25 mm` local clearance,
-   `0.35 mm` free-space scan clearance for the visible copper regions)
-4. greedily merges contiguous free cells into candidate rectangles
-5. uses those rectangles only as *hosting windows*, then maps a closed
-   Koch-derived boundary polygon into each one so the *entire* exposed copper
-   perimeter reads as a jagged/fractal silhouette instead of a rectangle with
-   one decorative bite taken out of it
-6. routes the real-board copper variants only from anchor points already on the
-   real `GND` network, then emits solid front-layer `GND` zones (plus short
-   masked `GND` connector corridors where needed)
-7. if `pcbnew` is available, immediately runs KiCad's zone filler and saves the
-   resulting `filled_polygon` data back into the `.kicad_pcb` file so renders
-   and diffs show actual solid copper rather than hollow zone outlines
+2. builds a real `shapely` obstacle union per copper layer from that layer's
+   routed tracks, shared vias, pad copper, and footprint courtyards/body bounds
+3. fills the remaining interior with dense families of parallel wavy stripe
+   centerlines rather than sparse anchor-driven maze trunks
+4. clips each stripe family against the obstacle union, buffers the surviving
+   segments into manufacturable copper widths, and keeps the segments isolated
+   instead of forcing them to connect back to a `GND` anchor
+5. writes the resulting decorative copper back as filled `gr_poly` graphics on
+   both `F.Cu` and `B.Cu`, which avoids KiCad isolated-zone warnings while
+   preserving real-copper clearance
 
-The result is still approximate rather than polygon-perfect: the free-space
-detector is grid/rectangle based, not a general polygon boolean engine. But it
-reacts to the actual routed board instead of a few manually chosen decorative
-patches.
-
-That means the safety argument changes from **\"isolated art cannot short
-anything\"** to **\"GND-connected art only touches GND, so it still cannot short
-two different nets together\"**.
+The safety argument is therefore simpler: **the decorative copper never touches
+real routed copper at all**. It is just dense, no-net copper artwork that stays
+clear of pads, traces, vias, and courtyard keepouts on each layer.
 
 ## Isolation strategy
 

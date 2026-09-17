@@ -216,23 +216,17 @@ The real-board profile:
 
 - reads the real `Edge.Cuts` outline through `pcbnew` and insets it to define a
   true full-board interior polygon
-- unions real obstacles with `shapely`: exact pad polygons, routed track/via
-  copper, and each footprint courtyard (falling back to body bounds only if a
-  courtyard is missing)
-- generates a continuous whole-board copper background, then punches a tiled
-  mix of negative-space motifs through it: local cutout motifs from
-  `curves/selfavoiding_maze_path.py` plus Koch, Gosper, Dragon, and
-  Sierpinski-derived shapes
-- subtracts both the obstacle union and those decorative cutout motifs from the
-  continuous copper background, so the `GND` texture gets real obstacle
-  clearances and visibly irregular patterned voids instead of a waffle grid or
-  a few pre-detected rectangles
-- replaces the old `adc-fractal-fill-region-*` / `adc-fractal-fill-corridor-*`
-  sticker zones with one new front-copper `GND` zone object carrying multiple
-  polygon outlines/holes as needed
-- leaves solder mask unchanged so the continuous `GND` texture stays DRC-clean
-- refills the zone with `pcbnew` immediately, baking fresh `filled_polygon`
-  data back into the checked-in `.kicad_pcb` file
+- unions real obstacles with `shapely` per layer: exact pad polygons, routed
+  track/via copper, and each footprint courtyard (falling back to body bounds
+  only if a courtyard is missing)
+- generates dense, non-intersecting wavy stripe centerlines across nearly the
+  full open board area on both `F.Cu` and `B.Cu`, then clips each stripe family
+  against that layer's obstacle union
+- buffers the surviving stripe segments into isolated decorative copper islands
+  and writes them back as filled `gr_poly` copper graphics, so the art does not
+  need to bridge back to `GND` anchors or merge into one connected pour
+- leaves routed copper untouched while filling the remaining visual dead space
+  with a much denser woven texture than the earlier sparse maze approach
 
 ### Current status
 

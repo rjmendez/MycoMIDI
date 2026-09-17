@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -30,34 +31,86 @@ TEXTURE_FINE_SPACING_Y_MM = 6.4
 TEXTURE_LINE_WIDTH_MM = 0.24
 TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
-TEXTURE_EDGE_MARGIN_MM = 2.4
-MAZE_GRID_PITCH_MM = 2.4
-MAZE_GRID_COVERAGE = 0.52
-MAZE_PASS_COUNT = 8
-MAZE_PASS_WIDTH_MM = 0.25
-MAZE_PASS_WIDTH_FINE_MM = 0.19
+TEXTURE_EDGE_MARGIN_MM = 1.15
+FRONT_STRIPE_PITCH_MM = 0.82
+FRONT_STRIPE_WIDTH_MM = 0.42
+FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
+FRONT_STRIPE_WAVE_LENGTH_MM = 10.8
+BACK_STRIPE_PITCH_MM = 0.80
+BACK_STRIPE_WIDTH_MM = 0.4
+BACK_STRIPE_WAVE_AMPLITUDE_MM = 0.5
+BACK_STRIPE_WAVE_LENGTH_MM = 9.6
 MIN_COMPONENT_AREA_MM2 = 0.8
 MIN_LINE_COMPONENT_AREA_MM2 = 0.04
 MIN_MOTIF_AREA_MM2 = 0.18
 ARC_RESOLUTION = 6
 POLYGON_ERROR_MM = 0.02
-ZONE_NAME = "adc-fractal-fill-texture-front"
+ZONE_NAME_PREFIX = "adc-fractal-fill-texture"
+
+
+@dataclass(frozen=True)
+class LayerTextureConfig:
+    label: str
+    layer_id: int
+    layer_name: str
+    zone_name: str
+    stripe_pitch_mm: float
+    stripe_width_mm: float
+    wave_amplitude_mm: float
+    wave_length_mm: float
+    stripe_angle_deg: float
+    phase_radians: float
+
+
+LAYER_TEXTURE_CONFIGS = (
+    LayerTextureConfig(
+        label="front",
+        layer_id=pcbnew.F_Cu,
+        layer_name="F.Cu",
+        zone_name=f"{ZONE_NAME_PREFIX}-front",
+        stripe_pitch_mm=FRONT_STRIPE_PITCH_MM,
+        stripe_width_mm=FRONT_STRIPE_WIDTH_MM,
+        wave_amplitude_mm=FRONT_STRIPE_WAVE_AMPLITUDE_MM,
+        wave_length_mm=FRONT_STRIPE_WAVE_LENGTH_MM,
+        stripe_angle_deg=15.0,
+        phase_radians=0.35,
+    ),
+    LayerTextureConfig(
+        label="back",
+        layer_id=pcbnew.B_Cu,
+        layer_name="B.Cu",
+        zone_name=f"{ZONE_NAME_PREFIX}-back",
+        stripe_pitch_mm=BACK_STRIPE_PITCH_MM,
+        stripe_width_mm=BACK_STRIPE_WIDTH_MM,
+        wave_amplitude_mm=BACK_STRIPE_WAVE_AMPLITUDE_MM,
+        wave_length_mm=BACK_STRIPE_WAVE_LENGTH_MM,
+        stripe_angle_deg=-28.0,
+        phase_radians=1.1,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class LayerTextureStats:
+    label: str
+    layer_name: str
+    zone_name: str
+    pads: int
+    tracks: int
+    vias: int
+    footprints: int
+    outer_rings: int
+    holes: int
+    stripe_segments: int
+    exposed_area_mm2: float
+    available_area_mm2: float
+    copper_coverage_ratio: float
 
 
 @dataclass(frozen=True)
 class TextureStats:
     gnd_net_id: int
-    pads: int
-    tracks: int
-    vias: int
-    footprints: int
-    anchor_vias: int
-    kept_components: int
-    outer_rings: int
-    holes: int
-    exposed_area_mm2: float
-    available_area_mm2: float
-    copper_coverage_ratio: float
+    layer_stats: tuple[LayerTextureStats, ...]
     maze_motif: str
 
 
@@ -161,11 +214,11 @@ def _board_outline(board: pcbnew.BOARD):
     return outline
 
 
-def _exact_pad_polygon(pad: pcbnew.PAD, clearance_mm: float):
+def _exact_pad_polygon(pad: pcbnew.PAD, clearance_mm: float, layer_id: int):
     polyset = pcbnew.SHAPE_POLY_SET()
     pad.TransformShapeToPolygon(
         polyset,
-        pcbnew.F_Cu,
+        layer_id,
         _from_mm(clearance_mm),
         _from_mm(POLYGON_ERROR_MM),
         pcbnew.ERROR_INSIDE,
@@ -209,7 +262,7 @@ def _gnd_anchor_disks(board: pcbnew.BOARD, gnd_net_name: str):
     return anchors
 
 
-def _obstacle_union(board: pcbnew.BOARD, gnd_net_name: str, clearance_mm: float):
+def _obstacle_union(board: pcbnew.BOARD, gnd_net_name: str, clearance_mm: float, layer_id: int):
     geometries = []
     pads = 0
     tracks = 0
@@ -219,20 +272,18 @@ def _obstacle_union(board: pcbnew.BOARD, gnd_net_name: str, clearance_mm: float)
         footprints += 1
         geometries.append(_courtyard_or_body_polygon(footprint))
         for pad in footprint.Pads():
-            pads += 1
-            if pad.GetNetname() == gnd_net_name:
+            if not pad.IsOnLayer(layer_id):
                 continue
-            geometries.append(_exact_pad_polygon(pad, clearance_mm))
+            pads += 1
+            geometries.append(_exact_pad_polygon(pad, clearance_mm, layer_id))
     for item in board.GetTracks():
         if isinstance(item, pcbnew.PCB_VIA):
             vias += 1
-            if item.GetNetname() == gnd_net_name:
-                continue
             geometries.append(_via_polygon(item, clearance_mm))
             continue
-        tracks += 1
-        if item.GetNetname() == gnd_net_name:
+        if item.GetLayer() != layer_id:
             continue
+        tracks += 1
         geometries.append(_track_polygon(item, clearance_mm))
     return unary_union(geometries).buffer(0), pads, tracks, vias, footprints
 
@@ -1074,6 +1125,83 @@ def _weave_backbone_layer(board_interior):
     return [part.buffer(0) for part in parts if not part.is_empty]
 
 
+def _iter_line_strings(geometry) -> Iterable[LineString]:
+        if geometry.is_empty:
+            return
+        if isinstance(geometry, LineString):
+            yield geometry
+            return
+        if geometry.geom_type == "MultiLineString":
+            for item in geometry.geoms:
+                if not item.is_empty:
+                    yield item
+            return
+        if isinstance(geometry, GeometryCollection):
+            for item in geometry.geoms:
+                yield from _iter_line_strings(item)
+            return
+
+
+def _wave_offset(x_value: float, config: LayerTextureConfig) -> float:
+        primary = config.wave_amplitude_mm * math.sin((2.0 * math.pi * x_value / config.wave_length_mm) + config.phase_radians)
+        secondary = (config.wave_amplitude_mm * 0.24) * math.sin((2.0 * math.pi * x_value / (config.wave_length_mm * 0.53)) + (config.phase_radians * 1.9))
+        tertiary = (config.wave_amplitude_mm * 0.14) * math.sin((2.0 * math.pi * x_value / (config.wave_length_mm * 2.35)) - (config.phase_radians * 0.7))
+        return primary + secondary + tertiary
+
+
+def _stripe_line_paths(board_interior, open_area, config: LayerTextureConfig) -> list[tuple[list[tuple[float, float]], float]]:
+        safe_open_area = open_area.intersection(board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)).buffer(0)
+        center = board_interior.centroid.coords[0]
+        safe_centerlines = safe_open_area.buffer(-((config.stripe_width_mm / 2.0) + 0.04)).buffer(0)
+        if safe_centerlines.is_empty:
+            raise ValueError(f"{config.layer_name} decorative safe area vanished while placing stripes")
+
+        rotated = affinity.rotate(safe_centerlines, -config.stripe_angle_deg, origin=center).buffer(0)
+        min_x, min_y, max_x, max_y = rotated.bounds
+        x_margin = max(config.wave_length_mm * 0.65, 7.0)
+        sample_step_mm = min(0.42, max(0.24, config.wave_length_mm / 32.0))
+        stripe_segments: list[tuple[list[tuple[float, float]], float]] = []
+        stripe_count = int(math.ceil((max_y - min_y) / config.stripe_pitch_mm)) + 5
+        start_y = min_y - (2.0 * config.stripe_pitch_mm)
+
+        for stripe_index in range(stripe_count):
+            base_y = start_y + (stripe_index * config.stripe_pitch_mm)
+            points: list[tuple[float, float]] = []
+            x_value = min_x - x_margin
+            while x_value <= (max_x + x_margin):
+                points.append((x_value, base_y + _wave_offset(x_value, config)))
+                x_value += sample_step_mm
+            rotated_line = LineString(points)
+            clipped = rotated.intersection(rotated_line)
+            for segment in _iter_line_strings(clipped):
+                if segment.length < 1.6:
+                    continue
+                restored = affinity.rotate(segment, config.stripe_angle_deg, origin=center)
+                coords = [(float(x), float(y)) for x, y in restored.coords]
+                if len(coords) < 2:
+                    continue
+                stripe_segments.append((coords, config.stripe_width_mm))
+
+        if not stripe_segments:
+            raise ValueError(f"{config.layer_name} decorative stripe placement produced no segments")
+        return stripe_segments
+
+
+def _stripe_geometry(board_interior, open_area, config: LayerTextureConfig):
+    stripe_paths = _stripe_line_paths(board_interior, open_area, config)
+    stripe_polygons = [
+        LineString(points).buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
+        for points, width_mm in stripe_paths
+        if len(points) >= 2
+    ]
+    if not stripe_polygons:
+        raise ValueError(f"{config.layer_name} decorative stripe placement produced no polygons")
+    geometry = unary_union(stripe_polygons).intersection(open_area).intersection(board_interior).buffer(0)
+    if geometry.is_empty:
+        raise ValueError(f"{config.layer_name} decorative stripe placement produced no copper geometry")
+    return stripe_paths, geometry
+
+
 def _line_art_geometry(board_interior, open_area, anchors: list[Polygon]):
     line_paths = _line_art_paths(board_interior, open_area, anchors)
     motif_parts = [
@@ -1276,23 +1404,33 @@ def _remove_generated_art(board: pcbnew.BOARD) -> None:
         drawing
         for drawing in board.GetDrawings()
         if isinstance(drawing, pcbnew.PCB_SHAPE)
-        and drawing.GetLayerName() in {"F.Mask", "B.Mask", "F.SilkS"}
+        and drawing.GetLayerName() in {"F.Mask", "B.Mask", "F.SilkS", "F.Cu", "B.Cu"}
     ]
     for drawing in old_shapes:
         board.Remove(drawing)
 
 
-def _add_zone(board: pcbnew.BOARD, geometry, *, gnd_net_id: int, clearance_mm: float, min_thickness_mm: float) -> pcbnew.ZONE:
+def _add_zone(
+    board: pcbnew.BOARD,
+    geometry,
+    *,
+    layer_id: int,
+    zone_name: str,
+    gnd_net_id: int,
+    clearance_mm: float,
+    min_thickness_mm: float,
+) -> pcbnew.ZONE:
     zone = pcbnew.ZONE(board)
-    zone.SetLayer(pcbnew.F_Cu)
+    zone.SetLayer(layer_id)
     zone.SetNetCode(gnd_net_id)
-    zone.SetZoneName(ZONE_NAME)
+    zone.SetZoneName(zone_name)
     zone.SetLocalClearance(_from_mm(clearance_mm))
     zone.SetMinThickness(_from_mm(min_thickness_mm))
     zone.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL)
     zone.SetThermalReliefGap(_from_mm(0.5))
     zone.SetThermalReliefSpokeWidth(_from_mm(0.5))
     zone.SetAssignedPriority(1)
+    zone.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_NEVER)
     zone.SetOutline(_polyset_from_shapely(geometry))
     board.Add(zone)
     return zone
@@ -1304,6 +1442,41 @@ def _count_holes(geometry) -> int:
 
 def _count_outer_rings(geometry) -> int:
     return sum(1 for _ in _iter_polygons(geometry))
+
+
+def _format_mm_text(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    if text == "-0":
+        return "0"
+    return text or "0"
+
+
+def _gr_poly_block(polygon: Polygon, *, layer_name: str) -> str:
+    points = " ".join(f'(xy {_format_mm_text(x)} {_format_mm_text(y)})' for x, y in polygon.exterior.coords[:-1])
+    return (
+        "\t(gr_poly\n"
+        "\t\t(pts\n"
+        f"\t\t\t{points}\n"
+        "\t\t)\n"
+        "\t\t(stroke\n"
+        "\t\t\t(width 0)\n"
+        "\t\t\t(type solid)\n"
+        "\t\t)\n"
+        "\t\t(fill solid)\n"
+        f'\t\t(layer "{layer_name}")\n'
+        f'\t\t(uuid "{uuid.uuid4()}")\n'
+        "\t)\n"
+    )
+
+
+def _generated_copper_blocks(prepared_layers: Iterable[tuple[LayerTextureConfig, object, LayerTextureStats]]) -> str:
+    blocks: list[str] = []
+    for config, geometry, _layer_stat in prepared_layers:
+        for polygon in _iter_polygons(geometry):
+            if polygon.area < MIN_LINE_COMPONENT_AREA_MM2:
+                continue
+            blocks.append(_gr_poly_block(polygon, layer_name=config.layer_name))
+    return "".join(blocks)
 
 
 def apply_continuous_texture_fill(
@@ -1323,50 +1496,46 @@ def apply_continuous_texture_fill(
     if board_interior.is_empty:
         raise ValueError("board interior vanished after edge inset")
 
-    obstacle_union, pads, tracks, vias, footprints = _obstacle_union(board, gnd_net_name, clearance_mm)
-    anchors = [anchor.intersection(board_interior) for anchor in _gnd_anchor_disks(board, gnd_net_name)]
-    anchors = [anchor for anchor in anchors if not anchor.is_empty]
-    if not anchors:
-        raise ValueError("no existing GND vias available to anchor decorative copper")
+    prepared_layers: list[tuple[LayerTextureConfig, object, LayerTextureStats]] = []
+    for config in LAYER_TEXTURE_CONFIGS:
+        obstacle_union, pads, tracks, vias, footprints = _obstacle_union(board, gnd_net_name, clearance_mm, config.layer_id)
+        open_area = board_interior.difference(obstacle_union).buffer(0)
+        if open_area.is_empty:
+            raise ValueError(f"{config.layer_name} open board area vanished after obstacle subtraction")
 
-    open_area = board_interior.difference(obstacle_union).buffer(0)
-    if open_area.is_empty:
-        raise ValueError("open board area vanished after obstacle subtraction")
-
-    line_art = unary_union([
-        _line_art_geometry(board_interior, open_area, anchors),
-        *_anchor_spokes(anchors, obstacle_union, board_interior),
-    ]).buffer(0)
-    carved = line_art.difference(obstacle_union).intersection(board_interior).buffer(0)
-    stitched = _stitch_components(carved, anchors, obstacle_union, board_interior)
-    bridged = unary_union([stitched, *_orthogonal_bridges(stitched, anchors, obstacle_union, board_interior)]).buffer(0)
-    final_geometry = _bridge_anchors(bridged, anchors, obstacle_union, board_interior).intersection(board_interior).buffer(0)
-    if final_geometry.is_empty:
-        raise ValueError("continuous texture fill produced no valid copper area")
+        stripe_paths, final_geometry = _stripe_geometry(board_interior, open_area, config)
+        layer_stat = LayerTextureStats(
+                label=config.label,
+                layer_name=config.layer_name,
+                zone_name=config.zone_name,
+                pads=pads,
+                tracks=tracks,
+                vias=vias,
+                footprints=footprints,
+                outer_rings=_count_outer_rings(final_geometry),
+                holes=_count_holes(final_geometry),
+                stripe_segments=len(stripe_paths),
+                exposed_area_mm2=final_geometry.area,
+                available_area_mm2=open_area.area,
+                copper_coverage_ratio=(final_geometry.area / max(open_area.area, 1e-6)),
+        )
+        prepared_layers.append((config, final_geometry, layer_stat))
 
     _remove_generated_art(board)
-    _add_zone(board, final_geometry, gnd_net_id=gnd_net.GetNetCode(), clearance_mm=clearance_mm, min_thickness_mm=min_thickness_mm)
-
-    filler = pcbnew.ZONE_FILLER(board)
-    filler.Fill(board.Zones())
     pcbnew.SaveBoard(str(board_path), board)
+
+    board_text = board_path.read_text(encoding="utf-8")
+    trimmed_text = board_text.rstrip()
+    if not trimmed_text.endswith(")"):
+        raise ValueError(f"{board_path} is not a valid KiCad board file")
+    board_text = f"{trimmed_text[:-1]}{_generated_copper_blocks(prepared_layers)})\n"
+    board_path.write_text(board_text, encoding="utf-8")
 
     return TextureStats(
         gnd_net_id=gnd_net.GetNetCode(),
-        pads=pads,
-        tracks=tracks,
-        vias=vias,
-        footprints=footprints,
-        anchor_vias=len(anchors),
-        kept_components=_count_outer_rings(final_geometry),
-        outer_rings=_count_outer_rings(final_geometry),
-        holes=_count_holes(final_geometry),
-        exposed_area_mm2=final_geometry.area,
-        available_area_mm2=open_area.area,
-        copper_coverage_ratio=(final_geometry.area / max(open_area.area, 1e-6)),
+        layer_stats=tuple(layer_stat for _config, _geometry, layer_stat in prepared_layers),
         maze_motif=(
-            "single GND zone built from buffered line-art polygons: coarse sparse self-avoiding "
-            "maze passes with explicit anchor trunks plus sparse Gosper, Dragon, Peano, "
-            "Sierpinski, and Koch accent curves"
+            "filled copper graphic polygons on F.Cu and B.Cu built from dense non-bridging "
+            "wavy stripe segments clipped against per-layer real-copper obstacle unions"
         ),
     )
