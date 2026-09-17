@@ -38,11 +38,11 @@ TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 1.15
 FRONT_STRIPE_PITCH_MM = 0.82
-FRONT_STRIPE_WIDTH_MM = 0.44
+FRONT_STRIPE_WIDTH_MM = 0.455
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
 FRONT_STRIPE_WAVE_LENGTH_MM = 10.8
 BACK_STRIPE_PITCH_MM = 0.80
-BACK_STRIPE_WIDTH_MM = 0.42
+BACK_STRIPE_WIDTH_MM = 0.43
 BACK_STRIPE_WAVE_AMPLITUDE_MM = 0.5
 BACK_STRIPE_WAVE_LENGTH_MM = 9.6
 MIN_COMPONENT_AREA_MM2 = 0.8
@@ -58,11 +58,13 @@ ACCENT_REGION_RADIUS_MM = 2.7
 ACCENT_REGION_HALO_MM = 3.0
 PATTERN_REGION_SPACING_MM = 4.2
 ACCENT_REGION_SPACING_MM = 3.2
-TRUCHET_TILE_MM = 1.32
+TRUCHET_TILE_MM = 1.12
 TRUCHET_ARC_SEGMENTS = 11
 VENATION_BASE_ATTRACTION_COUNT = 180
 VENATION_SLICE_COUNT = 3
 SLIVER_TRIM_MM = 0.03
+DOMINANT_REGION_BAND_MM = 5.2
+ACCENT_SIZE_MM = 1.9
 
 DOMINANT_PATTERN_TARGETS = {
     "front": {
@@ -76,22 +78,27 @@ DOMINANT_PATTERN_TARGETS = {
 }
 
 ACCENT_PATTERN_TARGETS = {
-    "front": (
-        (0.18, 0.16),
-        (0.82, 0.18),
-        (0.22, 0.82),
-        (0.78, 0.82),
-        (0.50, 0.18),
-        (0.50, 0.82),
-    ),
-    "back": (
-        (0.18, 0.22),
-        (0.82, 0.22),
-        (0.24, 0.78),
-        (0.76, 0.78),
-        (0.50, 0.28),
-        (0.50, 0.72),
-    ),
+    "front": ((0.16, 0.82),),
+    "back": ((0.82, 0.20),),
+}
+
+DOMINANT_REGION_SWATHS = {
+    "front": {
+        "truchet": (
+            (11, 5, 31, (0.04, 0.18), (0.88, 0.36), 7.2),
+        ),
+        "venation": (
+            (9, 5, 43, (0.08, 0.78), (0.92, 0.60), -6.2),
+        ),
+    },
+    "back": {
+        "truchet": (
+            (11, 5, 53, (0.10, 0.22), (0.96, 0.38), -7.0),
+        ),
+        "venation": (
+            (9, 5, 61, (0.04, 0.70), (0.86, 0.50), 6.0),
+        ),
+    },
 }
 
 
@@ -1358,6 +1365,55 @@ def _regularize_geometry(geometry, *, trim_mm: float = SLIVER_TRIM_MM):
     return opened.buffer(trim_mm, join_style=1, resolution=ARC_RESOLUTION).buffer(0)
 
 
+def _fraction_point(bounds: tuple[float, float, float, float], fractions: tuple[float, float]) -> tuple[float, float]:
+    min_x, min_y, max_x, max_y = bounds
+    return (min_x + ((max_x - min_x) * fractions[0]), min_y + ((max_y - min_y) * fractions[1]))
+
+
+def _organic_swath_region(
+    region,
+    *,
+    columns: int,
+    rows: int,
+    seed: int,
+    start_fractions: tuple[float, float],
+    end_fractions: tuple[float, float],
+    spread_mm: float,
+    band_width_mm: float,
+):
+    if region.is_empty:
+        return GeometryCollection()
+    bounds = region.bounds
+    swath = _curve_band(
+        _normalize_points(self_avoiding_maze_path_points(columns, rows, seed=seed)),
+        start=_fraction_point(bounds, start_fractions),
+        end=_fraction_point(bounds, end_fractions),
+        spread_mm=spread_mm,
+        width_mm=band_width_mm,
+    )
+    return swath.intersection(region).buffer(0)
+
+
+def _dominant_region_mask(region, *, config: LayerTextureConfig, pattern_name: str):
+    mask_parts = []
+    for columns, rows, seed, start_fractions, end_fractions, spread_mm in DOMINANT_REGION_SWATHS[config.label][pattern_name]:
+        swath = _organic_swath_region(
+            region,
+            columns=columns,
+            rows=rows,
+            seed=seed,
+            start_fractions=start_fractions,
+            end_fractions=end_fractions,
+            spread_mm=spread_mm,
+            band_width_mm=DOMINANT_REGION_BAND_MM,
+        )
+        if not swath.is_empty:
+            mask_parts.append(swath)
+    if not mask_parts:
+        return GeometryCollection()
+    return unary_union(mask_parts).intersection(region).buffer(0)
+
+
 def _truchet_region_geometry(region, *, seed: int, width_mm: float):
     if region.is_empty:
         return GeometryCollection(), 0
@@ -1431,14 +1487,19 @@ def _venation_region_geometry(region, *, seed: int, width_mm: float):
     return unary_union(geometries).buffer(0), path_count
 
 
-def _accent_geometry(kind: str, center: tuple[float, float], *, radius_mm: float, config: LayerTextureConfig, seed: int):
-    region = Point(center).buffer(radius_mm, resolution=ARC_RESOLUTION)
-    bounds = (center[0] - radius_mm, center[1] - radius_mm, center[0] + radius_mm, center[1] + radius_mm)
+def _accent_geometry(kind: str, center: tuple[float, float], *, size_mm: float, config: LayerTextureConfig, seed: int, region):
+    bounds = (
+        center[0] - (size_mm / 2.0),
+        center[1] - (size_mm / 2.0),
+        center[0] + (size_mm / 2.0),
+        center[1] + (size_mm / 2.0),
+    )
+    line_width_mm = max(TEXTURE_LINE_WIDTH_FINE_MM * 0.8, min(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.30))
 
     if kind == "phyllotaxis":
         return _paths_to_geometry(
             phyllotaxis_spiral_points(
-                point_count=89,
+                point_count=55,
                 primary_step=5,
                 secondary_step=8,
                 tertiary_step=13,
@@ -1447,23 +1508,23 @@ def _accent_geometry(kind: str, center: tuple[float, float], *, radius_mm: float
                 tertiary_offset=(seed + 5) % 13,
             ),
             bounds=bounds,
-            width_mm=max(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.42),
+            width_mm=line_width_mm,
             region=region,
         )
     if kind == "rosette":
         rosette_mode = "rose" if seed % 2 == 0 else "star"
         points = multifold_rosette_points(
             mode=rosette_mode,
-            k_numerator=7 + (seed % 2),
+            k_numerator=5 + (seed % 2),
             k_denominator=1,
-            num_points=320,
+            num_points=220,
             star_vertices=9,
             star_step=4,
         )
         return _paths_to_geometry(
             [points],
             bounds=bounds,
-            width_mm=max(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.4),
+            width_mm=line_width_mm,
             region=region,
         )
     if kind == "superformula":
@@ -1474,12 +1535,12 @@ def _accent_geometry(kind: str, center: tuple[float, float], *, radius_mm: float
             n1=0.3,
             n2=1.7,
             n3=1.7,
-            num_points=420,
+            num_points=180,
         )
         return _paths_to_geometry(
             [points],
             bounds=bounds,
-            width_mm=max(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.4),
+            width_mm=line_width_mm,
             region=region,
         )
     raise ValueError(f"unsupported accent type {kind}")
@@ -1492,97 +1553,61 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
     if safe_open_area.is_empty:
         return stripe_paths, stripe_geometry
 
-    selected_centers: list[tuple[float, float]] = []
     replacement_masks = []
     replacement_parts = []
-    bounds = safe_open_area.bounds
 
-    dominant_candidates = _candidate_centers(
-        safe_open_area,
-        radius_mm=PATTERN_REGION_RADIUS_MM,
-        spacing_mm=PATTERN_REGION_SPACING_MM,
-    )
-    if dominant_candidates:
-        target_map = DOMINANT_PATTERN_TARGETS[config.label]
-        truchet_center = _pick_center(
-            dominant_candidates,
-            bounds=bounds,
-            target_fractions=target_map["truchet"],
-            selected=selected_centers,
-            min_distance_mm=PATTERN_REGION_RADIUS_MM * 1.7,
+    truchet_mask = _dominant_region_mask(safe_open_area, config=config, pattern_name="truchet")
+    if not truchet_mask.is_empty:
+        truchet_geometry, truchet_segments = _truchet_region_geometry(
+            truchet_mask,
+            seed=23 if config.label == "front" else 41,
+            width_mm=max(config.stripe_width_mm * 0.96, 0.36),
         )
-        if truchet_center is not None:
-            selected_centers.append(truchet_center)
-            truchet_mask = _circular_mask(safe_open_area, truchet_center, TRUCHET_REGION_RADIUS_MM)
-            truchet_geometry, truchet_segments = _truchet_region_geometry(
-                truchet_mask,
-                seed=23 if config.label == "front" else 41,
-                width_mm=max(config.stripe_width_mm, 0.38),
-            )
-            if not truchet_geometry.is_empty:
-                replacement_masks.append(truchet_mask)
-                replacement_parts.append(truchet_geometry)
-                pattern_segments += truchet_segments
+        if not truchet_geometry.is_empty:
+            replacement_masks.append(truchet_mask)
+            replacement_parts.append(truchet_geometry)
+            pattern_segments += truchet_segments
 
-        venation_center = _pick_center(
-            dominant_candidates,
-            bounds=bounds,
-            target_fractions=target_map["venation"],
-            selected=selected_centers,
-            min_distance_mm=PATTERN_REGION_RADIUS_MM * 1.7,
+    venation_mask = _dominant_region_mask(safe_open_area, config=config, pattern_name="venation")
+    if not venation_mask.is_empty:
+        venation_geometry, venation_segments = _venation_region_geometry(
+            venation_mask,
+            seed=59 if config.label == "front" else 83,
+            width_mm=max(config.stripe_width_mm * 0.68, 0.24),
         )
-        if venation_center is not None:
-            selected_centers.append(venation_center)
-            venation_mask = _circular_mask(safe_open_area, venation_center, VENATION_REGION_RADIUS_MM)
-            venation_geometry, venation_segments = _venation_region_geometry(
-                venation_mask,
-                seed=59 if config.label == "front" else 83,
-                width_mm=max(config.stripe_width_mm * 0.74, 0.28),
-            )
-            if not venation_geometry.is_empty:
-                replacement_masks.append(venation_mask)
-                replacement_parts.append(venation_geometry)
-                pattern_segments += venation_segments
+        if not venation_geometry.is_empty:
+            replacement_masks.append(venation_mask)
+            replacement_parts.append(venation_geometry)
+            pattern_segments += venation_segments
 
-    accent_candidates = _candidate_centers(
-        safe_open_area,
-        radius_mm=ACCENT_REGION_HALO_MM,
-        spacing_mm=ACCENT_REGION_SPACING_MM,
-    )
-    accent_plan = ("rosette", "phyllotaxis", "superformula", "rosette", "phyllotaxis")
-    accent_centers: list[tuple[float, float]] = []
-    for index, accent_type in enumerate(accent_plan):
+    accent_candidates = _candidate_centers(safe_open_area, radius_mm=ACCENT_SIZE_MM, spacing_mm=ACCENT_REGION_SPACING_MM)
+    if accent_candidates and ACCENT_PATTERN_TARGETS[config.label]:
+        accent_type = "rosette" if config.label == "front" else "phyllotaxis"
         accent_center = _pick_center(
             accent_candidates,
-            bounds=bounds,
-            target_fractions=(ACCENT_PATTERN_TARGETS[config.label][index],),
-            selected=[*selected_centers, *accent_centers],
-            min_distance_mm=ACCENT_REGION_HALO_MM * 2.0,
+            bounds=safe_open_area.bounds,
+            target_fractions=(ACCENT_PATTERN_TARGETS[config.label][0],),
+            selected=[],
+            min_distance_mm=ACCENT_SIZE_MM * 1.8,
         )
-        if accent_center is None:
-            continue
-        accent_centers.append(accent_center)
-        accent_halo = _circular_mask(safe_open_area, accent_center, ACCENT_REGION_HALO_MM)
-        accent_region = _circular_mask(safe_open_area, accent_center, ACCENT_REGION_RADIUS_MM)
-        accent_geometry, accent_segments = _accent_geometry(
-            accent_type,
-            accent_center,
-            radius_mm=ACCENT_REGION_RADIUS_MM,
-            config=config,
-            seed=index + (7 if config.label == "front" else 19),
-        )
-        accent_geometry = accent_geometry.intersection(accent_region).buffer(0)
-        if accent_geometry.is_empty:
-            continue
-        replacement_masks.append(accent_halo)
-        replacement_parts.append(accent_geometry)
-        pattern_segments += accent_segments
+        if accent_center is not None:
+            accent_geometry, accent_segments = _accent_geometry(
+                accent_type,
+                accent_center,
+                size_mm=ACCENT_SIZE_MM,
+                config=config,
+                seed=7 if config.label == "front" else 19,
+                region=safe_open_area,
+            )
+            if not accent_geometry.is_empty:
+                replacement_parts.append(accent_geometry)
+                pattern_segments += accent_segments
 
-    if not replacement_parts:
+    if not replacement_masks and not replacement_parts:
         return stripe_paths, stripe_geometry
 
-    replacement_mask = unary_union(replacement_masks).buffer(0)
-    base_geometry = stripe_geometry.difference(replacement_mask).buffer(0)
+    replacement_mask = unary_union(replacement_masks).buffer(0) if replacement_masks else GeometryCollection()
+    base_geometry = stripe_geometry.difference(replacement_mask).buffer(0) if replacement_masks else stripe_geometry
     final_geometry = unary_union([base_geometry, *replacement_parts]).intersection(open_area).intersection(board_interior).buffer(0)
     final_geometry = _regularize_geometry(final_geometry)
     if final_geometry.is_empty:
@@ -1924,7 +1949,7 @@ def apply_continuous_texture_fill(
         layer_stats=tuple(layer_stat for _config, _geometry, layer_stat in prepared_layers),
         maze_motif=(
             "filled copper graphic polygons on F.Cu and B.Cu built from dense non-bridging "
-            "wavy stripe weave with Truchet windows, venation windows, and sparse phyllotaxis/"
-            "rosette/superformula accents clipped against per-layer real-copper obstacle unions"
+            "wavy stripe weave with irregular Truchet and venation region swaps plus tiny "
+            "phyllotaxis/rosette micro-accents clipped against per-layer real-copper obstacle unions"
         ),
     )
