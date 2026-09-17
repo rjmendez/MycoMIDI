@@ -44,9 +44,10 @@ For `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`,
    trusting a fixed board-size tuple
 2. builds a real `shapely` obstacle union per copper layer from that layer's
    routed tracks, shared vias, pad copper, and footprint courtyards/body bounds
-3. fills the remaining interior with dense families of parallel wavy stripe
-   centerlines rather than sparse anchor-driven maze trunks
-4. clips each stripe family against the obstacle union, buffers the surviving
+3. fills the remaining interior with dense self-avoiding maze corridors as the
+   dominant texture, then swaps broad irregular regions over to Truchet weave
+   and venation/branch linework with small phyllotaxis/rosette accents
+4. clips each line-art family against the obstacle union, buffers the surviving
    segments into manufacturable copper widths, and keeps the segments isolated
    instead of forcing them to connect back to a `GND` anchor
 5. writes the resulting decorative copper back as filled `gr_poly` graphics on

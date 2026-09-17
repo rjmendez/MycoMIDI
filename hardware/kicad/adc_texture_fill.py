@@ -37,6 +37,11 @@ TEXTURE_LINE_WIDTH_MM = 0.24
 TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 1.15
+MAZE_GRID_PITCH_MM = 2.55
+MAZE_GRID_COVERAGE = 0.74
+MAZE_PASS_COUNT = 5
+MAZE_PASS_WIDTH_MM = 0.26
+MAZE_PASS_WIDTH_FINE_MM = 0.19
 FRONT_STRIPE_PITCH_MM = 0.82
 FRONT_STRIPE_WIDTH_MM = 0.478
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
@@ -63,7 +68,7 @@ TRUCHET_ARC_SEGMENTS = 11
 VENATION_BASE_ATTRACTION_COUNT = 180
 VENATION_SLICE_COUNT = 3
 SLIVER_TRIM_MM = 0.12
-DOMINANT_REGION_BAND_MM = 5.2
+DOMINANT_REGION_BAND_MM = 8.4
 ACCENT_SIZE_MM = 1.9
 
 DOMINANT_PATTERN_TARGETS = {
@@ -78,25 +83,37 @@ DOMINANT_PATTERN_TARGETS = {
 }
 
 ACCENT_PATTERN_TARGETS = {
-    "front": ((0.16, 0.82),),
-    "back": ((0.82, 0.20),),
+    "front": (
+        ("phyllotaxis", (0.18, 0.82), 2.45, 7),
+        ("rosette", (0.78, 0.20), 2.25, 11),
+        ("superformula", (0.56, 0.72), 2.1, 17),
+    ),
+    "back": (
+        ("phyllotaxis", (0.80, 0.78), 2.45, 19),
+        ("rosette", (0.22, 0.22), 2.25, 23),
+        ("superformula", (0.44, 0.70), 2.1, 29),
+    ),
 }
 
 DOMINANT_REGION_SWATHS = {
     "front": {
         "truchet": (
             (11, 5, 31, (0.04, 0.18), (0.88, 0.36), 7.2),
+            (10, 6, 47, (0.14, 0.86), (0.92, 0.56), -6.8),
         ),
         "venation": (
             (9, 5, 43, (0.08, 0.78), (0.92, 0.60), -6.2),
+            (8, 5, 71, (0.12, 0.18), (0.82, 0.86), 5.8),
         ),
     },
     "back": {
         "truchet": (
             (11, 5, 53, (0.10, 0.22), (0.96, 0.38), -7.0),
+            (10, 6, 67, (0.16, 0.82), (0.88, 0.54), 6.6),
         ),
         "venation": (
             (9, 5, 61, (0.04, 0.70), (0.86, 0.50), 6.0),
+            (8, 5, 79, (0.20, 0.16), (0.76, 0.84), -5.7),
         ),
     },
 }
@@ -1543,6 +1560,38 @@ def _venation_region_geometry(region, *, seed: int, width_mm: float):
     return unary_union(geometries).buffer(0), path_count
 
 
+def _maze_field_geometry(board_interior, open_area, anchors: list[Polygon]):
+    if not anchors:
+        fallback = open_area.representative_point()
+        if fallback.is_empty:
+            return GeometryCollection(), 0
+        anchors = [fallback.buffer(0.05, resolution=ARC_RESOLUTION)]
+
+    maze_paths = _line_art_paths(board_interior, open_area, anchors)
+    maze_polygons = [
+        LineString(points).buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
+        for points, width_mm in maze_paths
+        if len(points) >= 2
+    ]
+    if not maze_polygons:
+        return GeometryCollection(), 0
+
+    geometry = unary_union(maze_polygons).intersection(open_area).intersection(board_interior).buffer(0)
+    if geometry.is_empty:
+        return GeometryCollection(), 0
+
+    geometry = _regularize_geometry(geometry, trim_mm=min(0.055, max(MAZE_PASS_WIDTH_FINE_MM * 0.18, 0.034)))
+    geometry = _prune_compact_patches(
+        geometry,
+        max_area_mm2=0.42,
+        max_aspect_ratio=1.9,
+        max_span_mm=1.25,
+        min_area_mm2=0.04,
+    )
+    geometry = _regularize_geometry(geometry, trim_mm=min(0.045, max(MAZE_PASS_WIDTH_FINE_MM * 0.14, 0.028)))
+    return geometry, len(maze_paths)
+
+
 def _accent_geometry(kind: str, center: tuple[float, float], *, size_mm: float, config: LayerTextureConfig, seed: int, region):
     bounds = (
         center[0] - (size_mm / 2.0),
@@ -1602,12 +1651,14 @@ def _accent_geometry(kind: str, center: tuple[float, float], *, size_mm: float, 
     raise ValueError(f"unsupported accent type {kind}")
 
 
-def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfig):
-    stripe_paths, stripe_geometry = _stripe_geometry(board_interior, open_area, config)
-    pattern_segments = len(stripe_paths)
+def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfig, anchors: list[Polygon]):
+    maze_geometry, maze_segments = _maze_field_geometry(board_interior, open_area, anchors)
+    if maze_geometry.is_empty:
+        raise ValueError(f"{config.layer_name} maze-dominant fill produced no base geometry")
+    pattern_segments = maze_segments
     safe_open_area = open_area.intersection(board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)).buffer(0)
     if safe_open_area.is_empty:
-        return stripe_paths, stripe_geometry
+        return pattern_segments, maze_geometry
 
     replacement_masks = []
     replacement_parts = []
@@ -1627,7 +1678,7 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
             )
             replacement_masks.append(truchet_mask)
             replacement_parts.append(truchet_geometry)
-            truchet_backfill = stripe_geometry.intersection(truchet_mask.difference(truchet_kept_mask)).buffer(0)
+            truchet_backfill = maze_geometry.intersection(truchet_mask.difference(truchet_kept_mask)).buffer(0)
             if not truchet_backfill.is_empty:
                 replacement_parts.append(truchet_backfill)
             pattern_segments += truchet_segments
@@ -1637,46 +1688,56 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
         venation_geometry, venation_segments = _venation_region_geometry(
             venation_mask,
             seed=59 if config.label == "front" else 83,
-            width_mm=max(config.stripe_width_mm * 0.68, 0.24),
+            width_mm=max(config.stripe_width_mm * 0.68, 0.23),
         )
         if not venation_geometry.is_empty:
-            replacement_masks.append(
-                venation_geometry.buffer(config.stripe_width_mm * 0.60, join_style=1, resolution=ARC_RESOLUTION).intersection(venation_mask).buffer(0)
+            venation_kept_mask = (
+                venation_geometry.buffer(config.stripe_width_mm * 0.92, join_style=1, resolution=ARC_RESOLUTION)
+                .intersection(venation_mask)
+                .buffer(0)
             )
+            replacement_masks.append(venation_mask)
             replacement_parts.append(venation_geometry)
+            venation_backfill = maze_geometry.intersection(venation_mask.difference(venation_kept_mask)).buffer(0)
+            if not venation_backfill.is_empty:
+                replacement_parts.append(venation_backfill)
             pattern_segments += venation_segments
 
     accent_candidates = _candidate_centers(safe_open_area, radius_mm=ACCENT_SIZE_MM, spacing_mm=ACCENT_REGION_SPACING_MM)
-    if accent_candidates and ACCENT_PATTERN_TARGETS[config.label]:
-        accent_type = "rosette" if config.label == "front" else None
-        if accent_type is None:
-            accent_candidates = []
-    if accent_candidates and ACCENT_PATTERN_TARGETS[config.label]:
+    selected_accents: list[tuple[float, float]] = []
+    for accent_type, target_fractions, accent_size_mm, accent_seed in ACCENT_PATTERN_TARGETS[config.label]:
+        if not accent_candidates:
+            break
         accent_center = _pick_center(
             accent_candidates,
             bounds=safe_open_area.bounds,
-            target_fractions=(ACCENT_PATTERN_TARGETS[config.label][0],),
-            selected=[],
-            min_distance_mm=ACCENT_SIZE_MM * 1.8,
+            target_fractions=(target_fractions,),
+            selected=selected_accents,
+            min_distance_mm=(accent_size_mm * 1.8) + ACCENT_REGION_HALO_MM,
         )
-        if accent_center is not None:
-            accent_geometry, accent_segments = _accent_geometry(
-                accent_type,
-                accent_center,
-                size_mm=ACCENT_SIZE_MM,
-                config=config,
-                seed=7 if config.label == "front" else 19,
-                region=safe_open_area,
-            )
-            if not accent_geometry.is_empty:
-                replacement_parts.append(accent_geometry)
-                pattern_segments += accent_segments
+        if accent_center is None:
+            continue
+        accent_mask = _circular_mask(safe_open_area, accent_center, accent_size_mm + ACCENT_REGION_HALO_MM)
+        accent_geometry, accent_segments = _accent_geometry(
+            accent_type,
+            accent_center,
+            size_mm=accent_size_mm,
+            config=config,
+            seed=accent_seed,
+            region=accent_mask,
+        )
+        if accent_geometry.is_empty:
+            continue
+        selected_accents.append(accent_center)
+        replacement_masks.append(accent_mask)
+        replacement_parts.append(accent_geometry)
+        pattern_segments += accent_segments
 
     if not replacement_masks and not replacement_parts:
-        return stripe_paths, stripe_geometry
+        return pattern_segments, maze_geometry
 
     replacement_mask = unary_union(replacement_masks).buffer(0) if replacement_masks else GeometryCollection()
-    base_geometry = stripe_geometry.difference(replacement_mask).buffer(0) if replacement_masks else stripe_geometry
+    base_geometry = maze_geometry.difference(replacement_mask).buffer(0) if replacement_masks else maze_geometry
     final_geometry = unary_union([base_geometry, *replacement_parts]).intersection(open_area).intersection(board_interior).buffer(0)
     final_geometry = _regularize_geometry(final_geometry)
     if final_geometry.is_empty:
@@ -1978,6 +2039,9 @@ def apply_continuous_texture_fill(
     if board_interior.is_empty:
         raise ValueError("board interior vanished after edge inset")
 
+    anchors = [anchor.intersection(board_interior) for anchor in _gnd_anchor_disks(board, gnd_net_name)]
+    anchors = [anchor for anchor in anchors if not anchor.is_empty]
+
     prepared_layers: list[tuple[LayerTextureConfig, object, LayerTextureStats]] = []
     for config in LAYER_TEXTURE_CONFIGS:
         obstacle_union, pads, tracks, vias, footprints = _obstacle_union(board, gnd_net_name, clearance_mm, config.layer_id)
@@ -1985,7 +2049,7 @@ def apply_continuous_texture_fill(
         if open_area.is_empty:
             raise ValueError(f"{config.layer_name} open board area vanished after obstacle subtraction")
 
-        pattern_segments, final_geometry = _mixed_pattern_geometry(board_interior, open_area, config)
+        pattern_segments, final_geometry = _mixed_pattern_geometry(board_interior, open_area, config, anchors)
         layer_stat = LayerTextureStats(
                 label=config.label,
                 layer_name=config.layer_name,
@@ -2017,8 +2081,8 @@ def apply_continuous_texture_fill(
         gnd_net_id=gnd_net.GetNetCode(),
         layer_stats=tuple(layer_stat for _config, _geometry, layer_stat in prepared_layers),
         maze_motif=(
-            "filled copper graphic polygons on F.Cu and B.Cu built from dense non-bridging "
-            "wavy stripe weave with irregular Truchet and venation region swaps plus a tiny "
-            "rosette micro-accent clipped against per-layer real-copper obstacle unions"
+            "filled copper graphic polygons on F.Cu and B.Cu built from dense self-avoiding "
+            "maze corridors with broad Truchet and venation swaths plus phyllotaxis, rosette, "
+            "and superformula micro-accents, all clipped against per-layer real-copper obstacle unions"
         ),
     )

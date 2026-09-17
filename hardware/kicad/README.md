@@ -219,14 +219,15 @@ The real-board profile:
 - unions real obstacles with `shapely` per layer: exact pad polygons, routed
   track/via copper, and each footprint courtyard (falling back to body bounds
   only if a courtyard is missing)
-- generates dense, non-intersecting wavy stripe centerlines across nearly the
-  full open board area on both `F.Cu` and `B.Cu`, then clips each stripe family
-  against that layer's obstacle union
-- buffers the surviving stripe segments into isolated decorative copper islands
+- generates dense self-avoiding maze corridors across nearly the full open
+  board area on both `F.Cu` and `B.Cu`, then swaps broad irregular swaths over
+  to Truchet-weave and venation/branch textures plus a few phyllotaxis/rosette
+  accents
+- buffers the surviving line-art paths into isolated decorative copper islands
   and writes them back as filled `gr_poly` copper graphics, so the art does not
   need to bridge back to `GND` anchors or merge into one connected pour
 - leaves routed copper untouched while filling the remaining visual dead space
-  with a much denser woven texture than the earlier sparse maze approach
+  with a denser maze/organic texture intended to visually bury the real traces
 
 ### Current status
 
