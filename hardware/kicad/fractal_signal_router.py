@@ -40,19 +40,19 @@ class RoutePlan:
 ROUTE_PLANS: tuple[RoutePlan, ...] = (
     RoutePlan(
         net_name="AIN0P",
-        family="dragon",
+        family="maze",
         layer="B.Cu",
         start=(15.8093, 10.7948),
         end=(43.6, 38.5855),
-        style="direct",
-        spread_mm=-0.35,
+        style="corridor",
+        spread_mm=-0.2,
         preserve_segments=(
             ((8.0, 12.0), (9.1517, 12.0)),
             ((9.1517, 12.0), (9.1517, 11.7121)),
             ((9.1517, 11.7121), (10.069, 10.7948)),
             ((10.069, 10.7948), (15.8093, 10.7948)),
         ),
-        curve_args=(("order", 6),),
+        curve_args=(("columns", 12), ("rows", 2), ("seed", 3)),
     ),
     RoutePlan(
         net_name="AIN1N",
@@ -73,16 +73,16 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
     ),
     RoutePlan(
         net_name="AIN2N",
-        family="gosper",
+        family="maze",
         layer="B.Cu",
         start=(13.8995, 17.08),
         end=(38.5952, 41.7757),
-        style="direct",
-        spread_mm=0.45,
+        style="corridor",
+        spread_mm=0.12,
         preserve_segments=(
             ((10.54, 17.08), (13.8995, 17.08)),
         ),
-        curve_args=(("order", 2),),
+        curve_args=(("columns", 12), ("rows", 2), ("seed", 3)),
     ),
     RoutePlan(
         net_name="AIN3N",
@@ -99,7 +99,7 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
     ),
     RoutePlan(
         net_name="AIN3P",
-        family="peano",
+        family="maze",
         layer="B.Cu",
         start=(13.4683, 23.3117),
         end=(35.8618, 45.7052),
@@ -118,7 +118,7 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
             ((38.5975, 44.3338), (37.2261, 45.7052)),
             ((37.2261, 45.7052), (35.8618, 45.7052)),
         ),
-        curve_args=(("order", 2),),
+        curve_args=(("columns", 10), ("rows", 5), ("seed", 21)),
     ),
     RoutePlan(
         net_name="AIN4N",
@@ -393,6 +393,15 @@ def build_route_points(plan: RoutePlan) -> list[tuple[float, float]]:
             start=plan.start,
             end=plan.end,
             spread=plan.spread_mm,
+        )
+    if plan.style == "corridor":
+        return orthogonalize_points(
+            map_points(
+                curve_points(plan),
+                start=plan.start,
+                end=plan.end,
+                spread=plan.spread_mm,
+            )
         )
 
     if plan.style != "window":
