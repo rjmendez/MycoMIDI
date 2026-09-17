@@ -247,7 +247,8 @@ The real-board profile:
 `hardware/kicad/fractal_signal_router.py` now applies the **trace-hiding visual
 pass** on the real `adc_board_8ch.kicad_pcb`: relative to the `733533b`
 baseline it procedurally reroutes four additional non-timing-critical analog
-`B.Cu` runs (`AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`) and preserves the existing
+`B.Cu` runs (`AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`) plus five `F.Cu` runs
+(`AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`), while preserving the existing
 five rerouted AIN nets (`AIN0N`, `AIN1P`, `AIN2P`, `AIN3P`, `AIN5P`).
 
 Run it on top of the `733533b` board, regenerate the decorative weave so the
@@ -257,7 +258,7 @@ new traces get fresh clearance cutouts, then re-run DRC:
 python3 hardware/kicad/fractal_signal_router.py \
   --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
   --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
-  --nets AIN0P AIN2N AIN3N AIN4N
+  --nets AIN0P AIN2N AIN3N AIN4N AIN1N AIN4P AIN5N AIN6N AIN6P
 
 python3 - <<'PY'
 from pathlib import Path
@@ -278,13 +279,14 @@ PY
   hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
 ```
 
-The checked-in branch now contains nine procedurally rerouted AIN nets:
+The checked-in branch now contains fourteen procedurally rerouted AIN nets:
 
 - inherited light reroutes: `AIN0N`, `AIN1P`, `AIN2P`
 - new v2 light reroutes: `AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`
+- new v3 front-layer reroutes: `AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`
 - stronger acute-angle reroutes: `AIN3P`, `AIN5P`
 - untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
-  `DOUT`, `AVDD`, `DVDD`, `REFP`, `CAP`, and the remaining F.Cu-only AIN nets
+  `DOUT`, `AVDD`, `DVDD`, `REFP`, `CAP`, `AIN7N`, and `AIN7P`
 - rerouting additional traces cleanly now requires re-running
   `adc_texture_fill.py` so the decorative copper islands clear the new routes
 

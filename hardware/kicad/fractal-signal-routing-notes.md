@@ -47,25 +47,32 @@ near decoupling/current-return behavior.
 
 ## Nets rerouted procedurally
 
-Nine AIN nets are procedurally rerouted in the checked-in branch. Three
+Fourteen AIN nets are procedurally rerouted in the checked-in branch. Three
 upper/mid nets (`AIN0N`, `AIN1P`, `AIN2P`) keep the earlier lightweight
 in-corridor perturbations. The v2 pass adds four more lightweight `B.Cu`
 reroutes on the remaining backside-via analog nets (`AIN0P`, `AIN2N`, `AIN3N`,
-`AIN4N`) and retains the two stronger lower-net detours (`AIN3P`, `AIN5P`) so
-the bottom-side render reads as deliberate woven routing instead of a handful
-of isolated gimmick traces.
+`AIN4N`). The v3 pass then reroutes five long `F.Cu` analog runs (`AIN1N`,
+`AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`) so the top-side copper no longer reads as a
+mostly direct fan of obvious diagonals, while retaining the two stronger
+lower-net detours (`AIN3P`, `AIN5P`) so the bottom-side render reads as
+deliberate woven routing instead of a handful of isolated gimmick traces.
 
 | Net | Original long segment replaced | Layer | Curve family | Parameters |
 | --- | --- | --- | --- | --- |
 | `AIN0N` | `(15.531, 12.0) -> (42.1075, 38.5765)` | `B.Cu` | self-avoiding maze | direct-endpoint mapping, `5x3`, `seed=7`, `spread=0.55 mm` |
 | `AIN0P` | `(15.8093, 10.7948) -> (43.6, 38.5855)` | `B.Cu` | Dragon | direct-endpoint mapping, `order=6`, `spread=-0.35 mm` |
+| `AIN1N` | `(14.5401, 14.54) -> (40.9188, 40.9187)` | `F.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=2`, `spread=0.8 mm` |
 | `AIN1P` | `(14.728, 13.3655) -> (40.4106, 39.0481)` | `B.Cu` | Peano | direct-endpoint mapping, `order=1`, `spread=-0.55 mm` |
 | `AIN2N` | `(13.8995, 17.08) -> (38.5952, 41.7757)` | `B.Cu` | Gosper | direct-endpoint mapping, `order=2`, `spread=0.45 mm` |
 | `AIN2P` | `(14.5129, 15.8754) -> (39.0382, 40.4007)` | `B.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=3`, `spread=0.45 mm` |
 | `AIN3N` | `(13.3762, 19.62) -> (36.3319, 42.5757)` | `B.Cu` | Gosper | direct-endpoint mapping, `order=2`, `spread=-0.4 mm` |
 | `AIN3P` | `(13.4683, 23.3117) -> (35.8618, 45.7052)` | `B.Cu` | Peano | staged detour via `(18.0,46.0) -> (29.0,46.0)`, `order=2`, `spread=4.8 mm`, then orthogonalized into sharp corners |
+| `AIN4P` | `(16.3297, 23.43) -> (37.2997, 44.4)` | `F.Cu` | Peano | direct-endpoint mapping, `order=1`, `spread=0.5 mm` |
 | `AIN4N` | `(14.1785, 22.16) -> (37.0458, 45.0273)` | `B.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=3`, `spread=0.45 mm` |
+| `AIN5N` | `(36.4677, 45.7772) -> (15.3905, 24.7)` | `F.Cu` | Peano | direct-endpoint mapping from chip side back to header side, `order=1`, `spread=0.6 mm` |
 | `AIN5P` | `(13.3183, 28.3917) -> (31.5023, 46.5757)` | `B.Cu` | self-avoiding maze | staged detour via `(18.0,58.8) -> (29.8,58.8)`, `10x5`, `seed=21`, `spread=5.4 mm`, then orthogonalized into sharp corners |
+| `AIN6N` | `(36.3262, 46.3484) -> (17.2178, 27.24)` | `F.Cu` | Peano | direct-endpoint mapping from chip side back to header side, `order=1`, `spread=0.15 mm` |
+| `AIN6P` | `(17.8923, 28.51) -> (37.5448, 48.1625)` | `F.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=4`, `spread=2.8 mm` |
 
 The script leaves each net's short pad-entry / chip-fanout segments alone and
 only swaps the long middle run. For the two stronger lower-net detours it uses
@@ -78,11 +85,13 @@ direct.
 `hardware/kicad/fractal_signal_router.py`:
 
 1. parses the KiCad board using the repo's byte-preserving CST helper
-2. identifies the targeted `B.Cu` nets by net name and removes only the
+2. identifies the targeted `B.Cu` or `F.Cu` nets by net name and removes only the
    replaceable long segments, while preserving the short header/chip stubs
    that already proved clean
 3. generates replacement polylines for:
    - four direct-endpoint mapped curves: `AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`
+   - five additional direct-endpoint mapped front-layer curves: `AIN1N`,
+     `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`
    - two widened curve windows: `AIN3P`, `AIN5P`
 4. converts each widened window polyline into Manhattan-style bends so the
    shipped traces show obvious sharp turns instead of gentle diagonal wiggles
@@ -113,11 +122,12 @@ Verification was intentionally broader than "DRC passes":
 
 3. **Changed-net scope check**
    - diff the board's copper items by net name against the `733533b` baseline
-   - expected result for the v2 pass: only `AIN0P`, `AIN2N`, `AIN3N`, and
-     `AIN4N` change among newly touched real nets; the earlier `AIN0N` /
-     `AIN1P` / `AIN2P` / `AIN3P` / `AIN5P` procedural routes remain as-is, and
-     `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`, `DOUT`, `AVDD`,
-     `DVDD`, `REFP`, and `CAP` stay untouched
+   - expected result for the v3 pass: `AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`,
+     `AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, and `AIN6P` differ from `733533b`;
+     the earlier `AIN0N` / `AIN1P` / `AIN2P` / `AIN3P` / `AIN5P` procedural
+     routes remain as-is, `AIN7N` / `AIN7P` remain direct, and `CLKIN`,
+     `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`, `DOUT`, `AVDD`, `DVDD`,
+     `REFP`, and `CAP` stay untouched
 
 4. **Decorative-fill regeneration check**
    - re-run `adc_texture_fill.py` after the route edit, then verify fresh DRC
@@ -135,9 +145,10 @@ Verification was intentionally broader than "DRC passes":
 ## Honest limit
 
 This is still deliberately **not** all 16 AIN nets. The viable extra targets on
-top of `733533b` were the four remaining backside analog runs that already used
-their own via transition into `B.Cu`, because they could accept small
-direct-endpoint perturbations without disturbing the timing bundle or the
-supply/reference cluster. The remaining untouched analog nets are front-side
-only routes threading the ADC pin field and nearby passives, where stronger
-detours were not worth the layout/electrical risk for a purely aesthetic goal.
+top of `733533b` were the four backside analog runs that already used their own
+via transition into `B.Cu` plus five long front-layer diagonals that accepted
+modest full-run procedural replacements without forcing any protected-net
+changes. The remaining untouched pair (`AIN7N`, `AIN7P`) repeatedly produced
+same-layer shorts or clearance failures against neighboring analog routes under
+every aggressive family/spacing combination tested, so they were left direct
+rather than ship a visually larger but electrically worse board.
