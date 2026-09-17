@@ -42,6 +42,9 @@ MAZE_GRID_COVERAGE = 0.74
 MAZE_PASS_COUNT = 5
 MAZE_PASS_WIDTH_MM = 0.26
 MAZE_PASS_WIDTH_FINE_MM = 0.19
+MAZE_FIELD_TILE_MM = 0.76
+MAZE_FIELD_WIDTH_MM = 0.285
+MAZE_FIELD_TILE_OVERLAP_MM = 1.4
 FRONT_STRIPE_PITCH_MM = 0.82
 FRONT_STRIPE_WIDTH_MM = 0.478
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
@@ -1560,36 +1563,68 @@ def _venation_region_geometry(region, *, seed: int, width_mm: float):
     return unary_union(geometries).buffer(0), path_count
 
 
-def _maze_field_geometry(board_interior, open_area, anchors: list[Polygon]):
+def _maze_field_geometry(board_interior, open_area, anchors: list[Polygon], *, config: LayerTextureConfig):
     if not anchors:
         fallback = open_area.representative_point()
         if fallback.is_empty:
             return GeometryCollection(), 0
         anchors = [fallback.buffer(0.05, resolution=ARC_RESOLUTION)]
 
-    maze_paths = _line_art_paths(board_interior, open_area, anchors)
-    maze_polygons = [
-        LineString(points).buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
-        for points, width_mm in maze_paths
-        if len(points) >= 2
-    ]
-    if not maze_polygons:
+    safe_region = open_area.intersection(board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)).buffer(0)
+    if safe_region.is_empty:
         return GeometryCollection(), 0
 
-    geometry = unary_union(maze_polygons).intersection(open_area).intersection(board_interior).buffer(0)
+    tile_mm = MAZE_FIELD_TILE_MM * (0.96 if config.label == "back" else 1.0)
+    width_mm = MAZE_FIELD_WIDTH_MM
+    field_parts = []
+    path_count = 0
+    seed_base = 409 if config.label == "front" else 653
+
+    for component_index, component in enumerate(sorted(_iter_polygons(safe_region), key=lambda polygon: polygon.area, reverse=True)):
+        if component.area < MIN_COMPONENT_AREA_MM2:
+            continue
+        min_x, min_y, max_x, max_y = component.bounds
+        bounds = (
+            min_x - MAZE_FIELD_TILE_OVERLAP_MM,
+            min_y - MAZE_FIELD_TILE_OVERLAP_MM,
+            max_x + MAZE_FIELD_TILE_OVERLAP_MM,
+            max_y + MAZE_FIELD_TILE_OVERLAP_MM,
+        )
+        columns = max(4, int(math.ceil((bounds[2] - bounds[0]) / tile_mm)))
+        rows = max(4, int(math.ceil((bounds[3] - bounds[1]) / tile_mm)))
+        geometry, paths = _paths_to_geometry(
+            truchet_weave_points(
+                columns,
+                rows,
+                seed=seed_base + (component_index * 37),
+                arc_segments=TRUCHET_ARC_SEGMENTS,
+            ),
+            bounds=bounds,
+            width_mm=width_mm,
+            region=component,
+            cap_style=2,
+        )
+        if geometry.is_empty:
+            continue
+        field_parts.append(geometry)
+        path_count += paths
+
+    if not field_parts:
+        return GeometryCollection(), 0
+
+    geometry = unary_union(field_parts).intersection(open_area).intersection(board_interior).buffer(0)
     if geometry.is_empty:
         return GeometryCollection(), 0
 
-    geometry = _regularize_geometry(geometry, trim_mm=min(0.055, max(MAZE_PASS_WIDTH_FINE_MM * 0.18, 0.034)))
+    geometry = _regularize_geometry(geometry, trim_mm=min(0.07, max(width_mm * 0.20, 0.045)))
     geometry = _prune_compact_patches(
         geometry,
-        max_area_mm2=0.42,
-        max_aspect_ratio=1.9,
-        max_span_mm=1.25,
+        max_area_mm2=0.30,
+        max_aspect_ratio=1.8,
+        max_span_mm=1.05,
         min_area_mm2=0.04,
     )
-    geometry = _regularize_geometry(geometry, trim_mm=min(0.045, max(MAZE_PASS_WIDTH_FINE_MM * 0.14, 0.028)))
-    return geometry, len(maze_paths)
+    return geometry, path_count
 
 
 def _accent_geometry(kind: str, center: tuple[float, float], *, size_mm: float, config: LayerTextureConfig, seed: int, region):
@@ -1652,7 +1687,7 @@ def _accent_geometry(kind: str, center: tuple[float, float], *, size_mm: float, 
 
 
 def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfig, anchors: list[Polygon]):
-    maze_geometry, maze_segments = _maze_field_geometry(board_interior, open_area, anchors)
+    maze_geometry, maze_segments = _maze_field_geometry(board_interior, open_area, anchors, config=config)
     if maze_geometry.is_empty:
         raise ValueError(f"{config.layer_name} maze-dominant fill produced no base geometry")
     pattern_segments = maze_segments
