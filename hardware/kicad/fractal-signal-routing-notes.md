@@ -1,17 +1,19 @@
 # Fractal signal routing notes
 
-This file documents the **actual signal-trace** reroute experiment on
+This file documents the **actual signal-trace** reroute experiments on
 `hardware/kicad/adc_board/adc_board_8ch.kicad_pcb`.
 
 ## Scope
 
 The goal was not to globally regenerate the entire board. The supported, DRC-
-clean slice here is a **surgical post-autoroute rewrite**:
+clean slice here is a **surgical post-route rewrite**:
 
 - keep the Freerouting fanout and all timing-sensitive traces intact
 - replace only a few long, low-risk analog middle segments with procedural
   meanders
-- avoid touching the already-added GND fractal-fill zones
+- keep changes off the timing bundle and the ADC supply/reference cluster
+- regenerate the decorative weave after rerouting so the isolated copper art
+  keeps proper clearance around the new paths
 
 That keeps the board electrically valid while still making some pad-to-ADC
 paths materially more annoying to eyeball.
@@ -45,19 +47,24 @@ near decoupling/current-return behavior.
 
 ## Nets rerouted procedurally
 
-Five AIN nets are procedurally rerouted in the checked-in branch. Three
+Nine AIN nets are procedurally rerouted in the checked-in branch. Three
 upper/mid nets (`AIN0N`, `AIN1P`, `AIN2P`) keep the earlier lightweight
-in-corridor perturbations. This acute-angle pass specifically strengthens the
-two lower nets (`AIN3P`, `AIN5P`) with sharper empty-space-filling detours into
-open `B.Cu` area so the bottom-side render reads as deliberate woven routing,
-not a barely perturbed diagonal.
+in-corridor perturbations. The v2 pass adds four more lightweight `B.Cu`
+reroutes on the remaining backside-via analog nets (`AIN0P`, `AIN2N`, `AIN3N`,
+`AIN4N`) and retains the two stronger lower-net detours (`AIN3P`, `AIN5P`) so
+the bottom-side render reads as deliberate woven routing instead of a handful
+of isolated gimmick traces.
 
 | Net | Original long segment replaced | Layer | Curve family | Parameters |
 | --- | --- | --- | --- | --- |
 | `AIN0N` | `(15.531, 12.0) -> (42.1075, 38.5765)` | `B.Cu` | self-avoiding maze | direct-endpoint mapping, `5x3`, `seed=7`, `spread=0.55 mm` |
+| `AIN0P` | `(15.8093, 10.7948) -> (43.6, 38.5855)` | `B.Cu` | Dragon | direct-endpoint mapping, `order=6`, `spread=-0.35 mm` |
 | `AIN1P` | `(14.728, 13.3655) -> (40.4106, 39.0481)` | `B.Cu` | Peano | direct-endpoint mapping, `order=1`, `spread=-0.55 mm` |
+| `AIN2N` | `(13.8995, 17.08) -> (38.5952, 41.7757)` | `B.Cu` | Gosper | direct-endpoint mapping, `order=2`, `spread=0.45 mm` |
 | `AIN2P` | `(14.5129, 15.8754) -> (39.0382, 40.4007)` | `B.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=3`, `spread=0.45 mm` |
+| `AIN3N` | `(13.3762, 19.62) -> (36.3319, 42.5757)` | `B.Cu` | Gosper | direct-endpoint mapping, `order=2`, `spread=-0.4 mm` |
 | `AIN3P` | `(13.4683, 23.3117) -> (35.8618, 45.7052)` | `B.Cu` | Peano | staged detour via `(18.0,46.0) -> (29.0,46.0)`, `order=2`, `spread=4.8 mm`, then orthogonalized into sharp corners |
+| `AIN4N` | `(14.1785, 22.16) -> (37.0458, 45.0273)` | `B.Cu` | Sierpinski arrowhead | direct-endpoint mapping, `order=3`, `spread=0.45 mm` |
 | `AIN5P` | `(13.3183, 28.3917) -> (31.5023, 46.5757)` | `B.Cu` | self-avoiding maze | staged detour via `(18.0,58.8) -> (29.8,58.8)`, `10x5`, `seed=21`, `spread=5.4 mm`, then orthogonalized into sharp corners |
 
 The script leaves each net's short pad-entry / chip-fanout segments alone and
@@ -71,18 +78,19 @@ direct.
 `hardware/kicad/fractal_signal_router.py`:
 
 1. parses the KiCad board using the repo's byte-preserving CST helper
-2. identifies the already-rerouted current-branch lower nets by net name and
-   removes only the replaceable `B.Cu` segments, while preserving the short
-   header/chip stubs that already proved clean
-3. generates stronger replacement polylines for:
-   - `AIN3P` via a widened Peano window
-   - `AIN5P` via a widened self-avoiding maze window
+2. identifies the targeted `B.Cu` nets by net name and removes only the
+   replaceable long segments, while preserving the short header/chip stubs
+   that already proved clean
+3. generates replacement polylines for:
+   - four direct-endpoint mapped curves: `AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`
+   - two widened curve windows: `AIN3P`, `AIN5P`
 4. converts each widened window polyline into Manhattan-style bends so the
    shipped traces show obvious sharp turns instead of gentle diagonal wiggles
 5. appends the replacement KiCad `segment` chains for the same net ids
 
-Because it is text-surgical rather than a full pcbnew save, untouched areas of
-the board — especially the GND fill zones — are not regenerated or normalized.
+After the route rewrite, `adc_texture_fill.py` must be re-run so the
+disconnected decorative copper islands get fresh clearance cutouts around the
+additional hidden traces.
 
 ## Verification method
 
@@ -104,18 +112,17 @@ Verification was intentionally broader than "DRC passes":
    - this proves the reroute did not relabel pads onto the wrong net
 
 3. **Changed-net scope check**
-   - diff the board's copper items by net name against the previous branch head
-   - expected result for this acute-angle pass: only `AIN3P` and `AIN5P`
-     change;
-     the earlier `AIN0N` / `AIN1P` / `AIN2P` procedural routes remain as-is,
-     and `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`, `DOUT`, `AVDD`,
-     `DVDD`, `REFP`, and all zone objects stay untouched
+   - diff the board's copper items by net name against the `733533b` baseline
+   - expected result for the v2 pass: only `AIN0P`, `AIN2N`, `AIN3N`, and
+     `AIN4N` change among newly touched real nets; the earlier `AIN0N` /
+     `AIN1P` / `AIN2P` / `AIN3P` / `AIN5P` procedural routes remain as-is, and
+     `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`, `DOUT`, `AVDD`,
+     `DVDD`, `REFP`, and `CAP` stay untouched
 
-4. **GND-fill integrity check**
-   - compare the extracted top-level `(zone ...)` blocks before/after after
-     normalizing them through the KiCad CST serializer
-   - expected result: identical zone content, plus no segment/via changes on
-     net `GND`
+4. **Decorative-fill regeneration check**
+   - re-run `adc_texture_fill.py` after the route edit, then verify fresh DRC
+   - expected result: zero shorts/clearance errors despite denser hidden-signal
+     routing inside the decorative weave
 
 5. **Render review**
    - export a 2D SVG that includes copper layers
@@ -127,9 +134,10 @@ Verification was intentionally broader than "DRC passes":
 
 ## Honest limit
 
-This is deliberately **not** all 16 AIN nets. Larger attempts to push the upper
-and mid-band AIN traces into equally dramatic detours produced clearance,
-crossing, or GND-art-adjacent collisions on this compact board. The checked-in
-branch therefore keeps the lighter upper reroutes and spends the extra acute-
-angle chaos budget on the two lower nets where the open area could absorb it
-cleanly.
+This is still deliberately **not** all 16 AIN nets. The viable extra targets on
+top of `733533b` were the four remaining backside analog runs that already used
+their own via transition into `B.Cu`, because they could accept small
+direct-endpoint perturbations without disturbing the timing bundle or the
+supply/reference cluster. The remaining untouched analog nets are front-side
+only routes threading the ADC pin field and nearby passives, where stronger
+detours were not worth the layout/electrical risk for a purely aesthetic goal.

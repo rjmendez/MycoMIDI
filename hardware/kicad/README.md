@@ -244,18 +244,32 @@ The real-board profile:
 
 ### Fractal signal rerouting on the real ADC board
 
-`hardware/kicad/fractal_signal_router.py` now applies the **acute-angle visual
-pass** on the real `adc_board_8ch.kicad_pcb`: it preserves the earlier verified
-lightweight reroutes on `AIN0N`, `AIN1P`, and `AIN2P`, then rewrites the lower
-`AIN3P` and `AIN5P` routes into sharper empty-space-filling zigzag windows on
-`B.Cu`.
+`hardware/kicad/fractal_signal_router.py` now applies the **trace-hiding visual
+pass** on the real `adc_board_8ch.kicad_pcb`: relative to the `733533b`
+baseline it procedurally reroutes four additional non-timing-critical analog
+`B.Cu` runs (`AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`) and preserves the existing
+five rerouted AIN nets (`AIN0N`, `AIN1P`, `AIN2P`, `AIN3P`, `AIN5P`).
 
-Run it after the clean autoroute, then re-run DRC:
+Run it on top of the `733533b` board, regenerate the decorative weave so the
+new traces get fresh clearance cutouts, then re-run DRC:
 
 ```bash
 python3 hardware/kicad/fractal_signal_router.py \
   --input hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
-  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
+  --output hardware/kicad/adc_board/adc_board_8ch.kicad_pcb \
+  --nets AIN0P AIN2N AIN3N AIN4N
+
+python3 - <<'PY'
+from pathlib import Path
+from adc_texture_fill import apply_continuous_texture_fill
+
+stats = apply_continuous_texture_fill(
+    Path("hardware/kicad/adc_board/adc_board_8ch.kicad_pcb"),
+    gnd_net_name="GND",
+)
+for layer in stats.layer_stats:
+    print(layer.layer_name, round(layer.copper_coverage_ratio, 4))
+PY
 
 ./scripts/kicad-cli.sh pcb drc \
   --format json \
@@ -264,15 +278,15 @@ python3 hardware/kicad/fractal_signal_router.py \
   hardware/kicad/adc_board/adc_board_8ch.kicad_pcb
 ```
 
-The checked-in branch now contains five procedurally rerouted AIN nets:
+The checked-in branch now contains nine procedurally rerouted AIN nets:
 
 - inherited light reroutes: `AIN0N`, `AIN1P`, `AIN2P`
+- new v2 light reroutes: `AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`
 - stronger acute-angle reroutes: `AIN3P`, `AIN5P`
 - untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
-  `DOUT`, `AVDD`, `DVDD`, `REFP`, and the remaining AIN nets
-- no GND-zone regeneration or decorative-fill edits; the visual-pass script
-  only swaps the targeted lower-net `B.Cu` routing while leaving the timing
-  bundle and existing GND art untouched
+  `DOUT`, `AVDD`, `DVDD`, `REFP`, `CAP`, and the remaining F.Cu-only AIN nets
+- rerouting additional traces cleanly now requires re-running
+  `adc_texture_fill.py` so the decorative copper islands clear the new routes
 
 See `hardware/kicad/fractal-signal-routing-notes.md` for the exact net/family
 mapping and the verification method beyond plain DRC.

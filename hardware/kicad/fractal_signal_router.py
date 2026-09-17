@@ -26,11 +26,12 @@ class RoutePlan:
     layer: str
     start: tuple[float, float]
     end: tuple[float, float]
-    left_lane_x: float
-    band_start: tuple[float, float]
-    band_end: tuple[float, float]
-    right_lane_x: float
     spread_mm: float
+    style: str = "window"
+    left_lane_x: float | None = None
+    band_start: tuple[float, float] | None = None
+    band_end: tuple[float, float] | None = None
+    right_lane_x: float | None = None
     width_mm: float = 0.2
     preserve_segments: tuple[tuple[tuple[float, float], tuple[float, float]], ...] = ()
     curve_args: tuple[tuple[str, int], ...] = ()
@@ -38,11 +39,54 @@ class RoutePlan:
 
 ROUTE_PLANS: tuple[RoutePlan, ...] = (
     RoutePlan(
+        net_name="AIN0P",
+        family="dragon",
+        layer="B.Cu",
+        start=(15.8093, 10.7948),
+        end=(43.6, 38.5855),
+        style="direct",
+        spread_mm=-0.35,
+        preserve_segments=(
+            ((8.0, 12.0), (9.1517, 12.0)),
+            ((9.1517, 12.0), (9.1517, 11.7121)),
+            ((9.1517, 11.7121), (10.069, 10.7948)),
+            ((10.069, 10.7948), (15.8093, 10.7948)),
+        ),
+        curve_args=(("order", 6),),
+    ),
+    RoutePlan(
+        net_name="AIN2N",
+        family="gosper",
+        layer="B.Cu",
+        start=(13.8995, 17.08),
+        end=(38.5952, 41.7757),
+        style="direct",
+        spread_mm=0.45,
+        preserve_segments=(
+            ((10.54, 17.08), (13.8995, 17.08)),
+        ),
+        curve_args=(("order", 2),),
+    ),
+    RoutePlan(
+        net_name="AIN3N",
+        family="gosper",
+        layer="B.Cu",
+        start=(13.3762, 19.62),
+        end=(36.3319, 42.5757),
+        style="direct",
+        spread_mm=-0.4,
+        preserve_segments=(
+            ((10.54, 19.62), (13.3762, 19.62)),
+        ),
+        curve_args=(("order", 2),),
+    ),
+    RoutePlan(
         net_name="AIN3P",
         family="peano",
         layer="B.Cu",
         start=(13.4683, 23.3117),
         end=(35.8618, 45.7052),
+        style="window",
         left_lane_x=13.8,
         band_start=(18.0, 46.0),
         band_end=(29.0, 46.0),
@@ -60,11 +104,25 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
         curve_args=(("order", 2),),
     ),
     RoutePlan(
+        net_name="AIN4N",
+        family="sierpinski",
+        layer="B.Cu",
+        start=(14.1785, 22.16),
+        end=(37.0458, 45.0273),
+        style="direct",
+        spread_mm=0.45,
+        preserve_segments=(
+            ((10.54, 22.16), (14.1785, 22.16)),
+        ),
+        curve_args=(("order", 3),),
+    ),
+    RoutePlan(
         family="maze",
         layer="B.Cu",
         net_name="AIN5P",
         start=(13.3183, 28.3917),
         end=(31.5023, 46.5757),
+        style="window",
         left_lane_x=13.2,
         band_start=(18.0, 58.8),
         band_end=(29.8, 58.8),
@@ -84,6 +142,16 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
 
 def _curve_kwargs(plan: RoutePlan) -> dict[str, int]:
     return dict(plan.curve_args)
+
+
+def _selected_plans(net_names: set[str] | None) -> tuple[RoutePlan, ...]:
+    if not net_names:
+        return ROUTE_PLANS
+    selected = tuple(plan for plan in ROUTE_PLANS if plan.net_name in net_names)
+    missing = sorted(net_names - {plan.net_name for plan in selected})
+    if missing:
+        raise ValueError(f"unknown route-plan nets requested: {', '.join(missing)}")
+    return selected
 
 
 def curve_points(plan: RoutePlan) -> list[tuple[float, float]]:
@@ -237,13 +305,31 @@ def orthogonalize_points(points: list[tuple[float, float]]) -> list[tuple[float,
 
 
 def build_route_points(plan: RoutePlan) -> list[tuple[float, float]]:
+    if plan.style == "direct":
+        return map_points(
+            curve_points(plan),
+            start=plan.start,
+            end=plan.end,
+            spread=plan.spread_mm,
+        )
+
+    if plan.style != "window":
+        raise ValueError(f"unsupported route style {plan.style!r}")
+    if None in (plan.left_lane_x, plan.band_start, plan.band_end, plan.right_lane_x):
+        raise ValueError(f"window route for {plan.net_name} is missing lane/band data")
+
+    assert plan.band_start is not None
+    assert plan.band_end is not None
+    assert plan.left_lane_x is not None
+    assert plan.right_lane_x is not None
     curve = orthogonalize_points(
         map_points(
-        curve_points(plan),
-        start=plan.band_start,
-        end=plan.band_end,
-        spread=plan.spread_mm,
-    ))
+            curve_points(plan),
+            start=plan.band_start,
+            end=plan.band_end,
+            spread=plan.spread_mm,
+        )
+    )
     return [
         plan.start,
         (plan.left_lane_x, plan.start[1]),
@@ -307,9 +393,9 @@ def _net_table(board: List) -> dict[str, int]:
     return net_ids
 
 
-def _remove_target_segments(board: List, net_ids: dict[str, int]) -> dict[str, float]:
+def _remove_target_segments(board: List, net_ids: dict[str, int], plans: tuple[RoutePlan, ...]) -> dict[str, float]:
     widths: dict[str, float] = {}
-    for plan in ROUTE_PLANS:
+    for plan in plans:
         net_id = net_ids[plan.net_name]
         removed_any = False
         for child in list(board.children):
@@ -346,16 +432,22 @@ def _insert_segments(text: str, segment_block: str) -> str:
     return text[: match.start()] + "\n" + segment_block.rstrip() + text[match.start() :]
 
 
-def rewrite_board(input_path: Path, output_path: Path) -> list[tuple[str, str]]:
+def rewrite_board(
+    input_path: Path,
+    output_path: Path,
+    *,
+    net_names: set[str] | None = None,
+) -> list[tuple[str, str]]:
     original = input_path.read_bytes()
     board = _board_root(original)
     net_ids = _net_table(board)
-    widths = _remove_target_segments(board, net_ids)
+    plans = _selected_plans(net_names)
+    widths = _remove_target_segments(board, net_ids, plans)
     base_text = serialize(parse(serialize(board))).decode("utf-8", "surrogateescape")
 
     generated_blocks = []
     summary = []
-    for plan in ROUTE_PLANS:
+    for plan in plans:
         mapped = build_route_points(plan)
         net_id = net_ids[plan.net_name]
         generated_blocks.append(
@@ -377,12 +469,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Replace selected ADS131M08 signal segments with procedural chaos.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--nets",
+        nargs="*",
+        help="Optional list of net names to rewrite. Defaults to every net with a defined route plan.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    summary = rewrite_board(args.input, args.output)
+    net_names = set(args.nets) if args.nets else None
+    summary = rewrite_board(args.input, args.output, net_names=net_names)
     for net_name, family in summary:
         print(f"{net_name}: routed with {family}")
     print(f"wrote {args.output}")
