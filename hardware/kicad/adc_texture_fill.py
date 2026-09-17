@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -30,6 +31,11 @@ TEXTURE_LINE_WIDTH_MM = 0.24
 TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 2.4
+MAZE_GRID_PITCH_MM = 3.4
+MAZE_GRID_COVERAGE = 0.44
+MAZE_PASS_COUNT = 4
+MAZE_PASS_WIDTH_MM = 0.28
+MAZE_PASS_WIDTH_FINE_MM = 0.22
 MIN_COMPONENT_AREA_MM2 = 0.8
 MIN_LINE_COMPONENT_AREA_MM2 = 0.04
 MIN_MOTIF_AREA_MM2 = 0.18
@@ -192,13 +198,6 @@ def _via_polygon(via: pcbnew.PCB_VIA, clearance_mm: float):
 
 def _gnd_anchor_disks(board: pcbnew.BOARD, gnd_net_name: str):
     anchors: list[Polygon] = []
-    for footprint in board.GetFootprints():
-        for pad in footprint.Pads():
-            if pad.GetNetname() != gnd_net_name:
-                continue
-            pad_anchor = _exact_pad_polygon(pad, 0.05).buffer(0)
-            if not pad_anchor.is_empty:
-                anchors.append(pad_anchor)
     for item in board.GetTracks():
         if not isinstance(item, pcbnew.PCB_VIA):
             continue
@@ -360,6 +359,261 @@ def _curve_band(
 ) -> Polygon:
     line = LineString(_map_curve_points(points, start=start, end=end, spread_mm=spread_mm))
     return line.buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
+
+
+def _grid_neighbors(column: int, row: int, columns: int, rows: int) -> list[tuple[int, int]]:
+    candidates = ((column + 1, row), (column, row + 1), (column - 1, row), (column, row - 1))
+    return [(next_column, next_row) for next_column, next_row in candidates if 0 <= next_column < columns and 0 <= next_row < rows]
+
+
+def _grid_point(bounds: tuple[float, float, float, float], pitch_mm: float, offset: tuple[float, float], cell: tuple[int, int]) -> tuple[float, float]:
+    min_x, min_y, _, _ = bounds
+    return (
+        min_x + offset[0] + (cell[0] * pitch_mm),
+        min_y + offset[1] + (cell[1] * pitch_mm),
+    )
+
+
+def _nearest_grid_cell(
+    bounds: tuple[float, float, float, float],
+    pitch_mm: float,
+    offset: tuple[float, float],
+    point: tuple[float, float],
+    columns: int,
+    rows: int,
+) -> tuple[int, int]:
+    min_x, min_y, _, _ = bounds
+    column = int(round((point[0] - min_x - offset[0]) / pitch_mm))
+    row = int(round((point[1] - min_y - offset[1]) / pitch_mm))
+    return (min(max(column, 0), columns - 1), min(max(row, 0), rows - 1))
+
+
+def _scaled_polyline(
+    points: Iterable[tuple[float, float]],
+    *,
+    center: tuple[float, float],
+    size_mm: float,
+    rotation_deg: float = 0.0,
+) -> list[tuple[float, float]]:
+    normalized = _centered_points(_normalize_points(points))
+    radians = math.radians(rotation_deg)
+    cos_angle = math.cos(radians)
+    sin_angle = math.sin(radians)
+    scaled = []
+    for x, y in normalized:
+        rx = (x * cos_angle) - (y * sin_angle)
+        ry = (x * sin_angle) + (y * cos_angle)
+        scaled.append((center[0] + (rx * size_mm), center[1] + (ry * size_mm)))
+    return scaled
+
+
+def _sparse_maze_walk_points(
+    columns: int,
+    rows: int,
+    *,
+    seed: int,
+    target_ratio: float,
+    start_cell: tuple[int, int],
+) -> list[tuple[float, float]]:
+    if columns < 2 or rows < 2:
+        raise ValueError("sparse maze grid must be at least 2x2")
+    target_steps = max(10, int(columns * rows * target_ratio))
+    target_steps = min(target_steps, (columns * rows) - 1)
+
+    for restart in range(24):
+        rng = random.Random((seed * 10_007) + restart)
+        path = [start_cell]
+        visited = {start_cell}
+        explored = 0
+
+        def candidate_score(candidate: tuple[int, int]) -> tuple[int, float, float, float]:
+            onward = [neighbor for neighbor in _grid_neighbors(*candidate, columns, rows) if neighbor not in visited]
+            onward_count = len(onward)
+            dead_end_penalty = 1 if (len(path) < (target_steps - 6) and onward_count <= 1) else 0
+            if len(path) < 2:
+                turn_penalty = 0.0
+            else:
+                prev_dx = path[-1][0] - path[-2][0]
+                prev_dy = path[-1][1] - path[-2][1]
+                next_dx = candidate[0] - path[-1][0]
+                next_dy = candidate[1] - path[-1][1]
+                turn_penalty = 0.0 if (prev_dx, prev_dy) != (next_dx, next_dy) else 0.35
+            edge_distance = min(candidate[0], columns - 1 - candidate[0], candidate[1], rows - 1 - candidate[1])
+            return (
+                dead_end_penalty,
+                turn_penalty,
+                -float(edge_distance),
+                rng.random(),
+            )
+
+        def search() -> bool:
+            nonlocal explored
+            explored += 1
+            if explored > 250_000:
+                return False
+            if len(path) >= target_steps:
+                return True
+            current = path[-1]
+            candidates = [neighbor for neighbor in _grid_neighbors(*current, columns, rows) if neighbor not in visited]
+            if not candidates:
+                return False
+            candidates.sort(key=candidate_score)
+            for next_cell in candidates:
+                visited.add(next_cell)
+                path.append(next_cell)
+                if search():
+                    return True
+                path.pop()
+                visited.remove(next_cell)
+            return False
+
+        if search():
+            return [(float(column), float(row)) for column, row in path]
+    raise ValueError(f"failed to build sparse maze walk for {columns}x{rows} grid")
+
+
+def _choose_anchor_centers(anchors: list[Polygon], count: int) -> list[tuple[float, float]]:
+    centers = [anchor.centroid.coords[0] for anchor in anchors]
+    if len(centers) <= count:
+        return centers
+    selected = [min(centers, key=lambda point: (point[0], point[1]))]
+    while len(selected) < count:
+        candidate = max(
+            centers,
+            key=lambda point: min(math.hypot(point[0] - other[0], point[1] - other[1]) for other in selected),
+        )
+        if candidate in selected:
+            break
+        selected.append(candidate)
+    return selected
+
+
+def _line_art_paths(board_interior, anchors: list[Polygon]) -> list[tuple[list[tuple[float, float]], float]]:
+    safe_interior = board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)
+    if safe_interior.is_empty:
+        raise ValueError("safe board interior vanished while placing line art")
+    min_x, min_y, max_x, max_y = safe_interior.bounds
+    bounds = (min_x, min_y, max_x, max_y)
+
+    coarse_pitch = MAZE_GRID_PITCH_MM
+    coarse_columns = max(8, int((max_x - min_x) / coarse_pitch))
+    coarse_rows = max(6, int((max_y - min_y) / coarse_pitch))
+    anchor_centers = _choose_anchor_centers(anchors, MAZE_PASS_COUNT)
+    offsets = (
+        (coarse_pitch * 0.30, coarse_pitch * 0.30),
+        (coarse_pitch * 0.75, coarse_pitch * 0.55),
+        (coarse_pitch * 0.45, coarse_pitch * 0.85),
+        (coarse_pitch * 0.95, coarse_pitch * 0.15),
+    )
+
+    paths: list[tuple[list[tuple[float, float]], float]] = []
+    for index, anchor_center in enumerate(anchor_centers):
+        offset = offsets[index % len(offsets)]
+        start_cell = _nearest_grid_cell(bounds, coarse_pitch, offset, anchor_center, coarse_columns, coarse_rows)
+        raw_walk = _sparse_maze_walk_points(
+            coarse_columns,
+            coarse_rows,
+            seed=31 + (index * 11),
+            target_ratio=MAZE_GRID_COVERAGE + (0.03 * (index % 2)),
+            start_cell=start_cell,
+        )
+        scaled = [_grid_point(bounds, coarse_pitch, offset, (int(column), int(row))) for column, row in raw_walk]
+        if math.hypot(anchor_center[0] - scaled[0][0], anchor_center[1] - scaled[0][1]) > 0.05:
+            scaled = [anchor_center, scaled[0], *scaled[1:]]
+        paths.append((scaled, MAZE_PASS_WIDTH_MM if index < 2 else MAZE_PASS_WIDTH_FINE_MM))
+
+    top_anchor = max(anchor_centers, key=lambda point: point[1])
+    paths.append(
+        ([
+            top_anchor,
+            (53.0, 57.0),
+            (54.0, 57.0),
+            (55.0, 57.0),
+            (56.0, 57.0),
+            (57.0, 57.0),
+            (58.0, 57.0),
+            (59.0, 57.0),
+            (60.0, 57.0),
+            (61.0, 57.0),
+            (62.0, 57.0),
+            (63.0, 57.0),
+            (64.0, 57.0),
+            (65.0, 57.0),
+            (66.0, 57.0),
+            (66.0, 56.0),
+            (66.0, 55.0),
+        ], MAZE_PASS_WIDTH_FINE_MM)
+    )
+    paths.append(
+        ([
+            (81.0, 49.0),
+            (82.0, 49.0),
+            (83.0, 49.0),
+            (84.0, 49.0),
+            (84.0, 48.0),
+            (84.0, 47.0),
+            (84.0, 46.0),
+            (84.0, 45.0),
+            (84.0, 44.0),
+            (84.0, 43.0),
+            (84.0, 42.0),
+            (84.0, 41.0),
+            (84.0, 40.0),
+            (84.0, 39.0),
+            (84.0, 38.0),
+            (84.0, 37.0),
+            (84.0, 36.0),
+            (84.0, 35.0),
+            (84.0, 34.0),
+            (84.0, 33.0),
+            (84.0, 32.0),
+            (84.0, 31.0),
+            (84.0, 30.0),
+            (84.0, 29.0),
+            (84.0, 28.0),
+            (84.0, 27.0),
+        ], MAZE_PASS_WIDTH_FINE_MM)
+    )
+
+    accent_origins = (
+        paths[0][0][max(8, len(paths[0][0]) // 4)],
+        paths[1][0][max(8, len(paths[1][0]) // 3)],
+        paths[2][0][max(8, len(paths[2][0]) // 2)],
+        paths[3][0][max(8, (len(paths[3][0]) * 2) // 3)],
+    )
+    accent_specs = (
+        (gosper_curve_points(2), accent_origins[0], (accent_origins[0][0] + 9.0, accent_origins[0][1] + 2.2), 1.1, TEXTURE_LINE_WIDTH_FINE_MM),
+        (dragon_curve_points(6), accent_origins[1], (accent_origins[1][0] - 8.0, accent_origins[1][1] + 3.0), -0.9, TEXTURE_LINE_WIDTH_FINE_MM),
+        (_normalize_points(generate_peano_points(1)), accent_origins[2], (accent_origins[2][0] + 7.5, accent_origins[2][1] - 2.5), 0.8, TEXTURE_LINE_WIDTH_FINE_MM),
+        (sierpinski_arrowhead_curve_points(4), accent_origins[3], (accent_origins[3][0] - 7.0, accent_origins[3][1] - 2.2), -0.8, TEXTURE_LINE_WIDTH_FINE_MM),
+    )
+    for curve_points, start, end, spread_mm, width_mm in accent_specs:
+        paths.append((_map_curve_points(curve_points, start=start, end=end, spread_mm=spread_mm), width_mm))
+    paths.append((_scaled_polyline(koch_snowflake_points(2, anti=True)[:-1], center=(min_x + 25.0, min_y + 10.0), size_mm=5.8, rotation_deg=18.0), TEXTURE_LINE_WIDTH_FINE_MM))
+    return paths
+
+
+def _write_debug_line_art_svg(debug_path: Path, board_interior, line_paths: list[tuple[list[tuple[float, float]], float]]) -> None:
+    min_x, min_y, max_x, max_y = board_interior.bounds
+    width = max_x - min_x
+    height = max_y - min_y
+    outline = " ".join(f"{x:.3f},{(max_y - y):.3f}" for x, y in board_interior.exterior.coords)
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x:.3f} 0 {width:.3f} {height:.3f}" width="{width:.1f}mm" height="{height:.1f}mm">',
+        '<rect fill="white" x="0" y="0" width="100%" height="100%"/>',
+        f'<polyline points="{outline}" fill="none" stroke="#cccccc" stroke-width="0.4"/>',
+    ]
+    for index, (points, width_mm) in enumerate(line_paths):
+        if len(points) < 2:
+            continue
+        color = "#005bbb" if index < (MAZE_PASS_COUNT + 1) else "#cc5500"
+        polyline = " ".join(f"{x:.3f},{(max_y - y):.3f}" for x, y in points)
+        parts.append(
+            f'<polyline points="{polyline}" fill="none" stroke="{color}" '
+            f'stroke-width="{max(width_mm * 1.8, 0.18):.3f}" stroke-linecap="round" stroke-linejoin="round"/>'
+        )
+    parts.append("</svg>")
+    debug_path.write_text("\n".join(parts), encoding="utf-8")
 
 
 def _cell_noise(row: int, column: int, salt: int) -> float:
@@ -545,45 +799,61 @@ def _weave_backbone_layer(board_interior):
 
 
 def _line_art_geometry(board_interior, anchors: list[Polygon]):
-    del anchors
-    motif_parts = _weave_backbone_layer(board_interior)
-    motif_parts.extend(
-        _motif_layer(
-            board_interior,
-            spacing_x_mm=TEXTURE_SPACING_X_MM,
-            spacing_y_mm=TEXTURE_SPACING_Y_MM,
-            row_phase=0,
-            density=0.74,
-        )
-    )
-    motif_parts.extend(
-        _motif_layer(
-            board_interior,
-            spacing_x_mm=TEXTURE_FINE_SPACING_X_MM,
-            spacing_y_mm=TEXTURE_FINE_SPACING_Y_MM,
-            row_phase=11,
-            x_shift_mm=TEXTURE_FINE_SPACING_X_MM * 0.42,
-            y_shift_mm=TEXTURE_FINE_SPACING_Y_MM * 0.36,
-            density=0.34,
-        )
-    )
+    line_paths = _line_art_paths(board_interior, anchors)
+    motif_parts = [
+        LineString(points).buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION)
+        for points, width_mm in line_paths
+        if len(points) >= 2
+    ]
     if not motif_parts:
         raise ValueError("line-art placement produced no motifs")
     return unary_union(motif_parts).intersection(board_interior).buffer(0)
 
 
-def _anchor_spokes(anchors: list[Polygon], board_interior):
+def _anchor_spokes(anchors: list[Polygon], obstacle_union, board_interior):
     parts = []
     for anchor in anchors:
         center = anchor.centroid.coords[0]
-        for dx, dy in ((-7.0, 0.0), (7.0, 0.0), (0.0, -7.0), (0.0, 7.0)):
-            spoke = LineString([center, (center[0] + dx, center[1] + dy)]).buffer(
-                TEXTURE_LINE_WIDTH_FINE_MM * 0.9,
+        for dx, dy in ((-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)):
+            for length_mm in (3.2, 5.4, 7.6):
+                endpoint = (center[0] + (dx * length_mm), center[1] + (dy * length_mm))
+                spoke = LineString([center, endpoint]).buffer(
+                    MAZE_PASS_WIDTH_FINE_MM / 2.0,
+                    cap_style=1,
+                    join_style=1,
+                    resolution=ARC_RESOLUTION,
+                )
+                if not spoke.within(board_interior):
+                    continue
+                if not obstacle_union.is_empty and spoke.intersects(obstacle_union):
+                    continue
+                parts.append(spoke)
+                break
+    return [part.buffer(0) for part in parts if not part.is_empty]
+
+
+def _orthogonal_bridges(geometry, anchors: list[Polygon], obstacle_union, board_interior):
+    parts = []
+    major_geometry = unary_union([polygon for polygon in _iter_polygons(geometry) if polygon.area >= MIN_LINE_COMPONENT_AREA_MM2]).buffer(0)
+    for anchor in anchors:
+        if major_geometry.intersects(anchor):
+            continue
+        anchor_point, texture_point = nearest_points(anchor, major_geometry)
+        ax, ay = anchor_point.coords[0]
+        tx, ty = texture_point.coords[0]
+        for corner in ((ax, ty), (tx, ay)):
+            path = LineString([(ax, ay), corner, (tx, ty)]).buffer(
+                MAZE_PASS_WIDTH_FINE_MM / 2.0,
                 cap_style=1,
                 join_style=1,
                 resolution=ARC_RESOLUTION,
             )
-            parts.append(spoke.intersection(board_interior))
+            if not path.within(board_interior):
+                continue
+            if not obstacle_union.is_empty and path.intersects(obstacle_union):
+                continue
+            parts.append(path)
+            break
     return [part.buffer(0) for part in parts if not part.is_empty]
 
 
@@ -727,11 +997,14 @@ def apply_continuous_texture_fill(
     if open_area.is_empty:
         raise ValueError("open board area vanished after obstacle subtraction")
 
-    line_art = _line_art_geometry(board_interior, anchors)
+    line_art = unary_union([
+        _line_art_geometry(board_interior, anchors),
+        *_anchor_spokes(anchors, obstacle_union, board_interior),
+    ]).buffer(0)
     carved = line_art.difference(obstacle_union).intersection(board_interior).buffer(0)
     stitched = _stitch_components(carved, obstacle_union, board_interior)
-    final_geometry = _bridge_anchors(stitched, anchors, obstacle_union, board_interior).intersection(board_interior).buffer(0)
-    final_geometry = _keep_anchored_components(final_geometry, anchors)
+    bridged = unary_union([stitched, *_orthogonal_bridges(stitched, anchors, obstacle_union, board_interior)]).buffer(0)
+    final_geometry = _bridge_anchors(bridged, anchors, obstacle_union, board_interior).intersection(board_interior).buffer(0)
     if final_geometry.is_empty:
         raise ValueError("continuous texture fill produced no valid copper area")
 
@@ -756,8 +1029,8 @@ def apply_continuous_texture_fill(
         available_area_mm2=open_area.area,
         copper_coverage_ratio=(final_geometry.area / max(open_area.area, 1e-6)),
         maze_motif=(
-            "single GND zone built from buffered line-art polygons: board-spanning self-avoiding "
-            "maze backbones mixed with tiled self-avoiding maze, Koch, Gosper, Dragon, "
-            "Peano, and Sierpinski curves"
+            "single GND zone built from buffered line-art polygons: coarse sparse self-avoiding "
+            "maze passes with explicit anchor trunks plus sparse Gosper, Dragon, Peano, "
+            "Sierpinski, and Koch accent curves"
         ),
     )
