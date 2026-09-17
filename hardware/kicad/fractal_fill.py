@@ -1480,7 +1480,7 @@ def main() -> int:
         for layer_stat in stats.layer_stats:
             print(
                 f"{layer_stat.layer_name}: tag={layer_stat.zone_name}, "
-                f"{layer_stat.stripe_segments} stripe segments, {layer_stat.outer_rings} outer polygons, "
+                f"{layer_stat.pattern_segments} pattern segments, {layer_stat.outer_rings} outer polygons, "
                 f"{layer_stat.holes} holes, ~{layer_stat.exposed_area_mm2:.0f} mm^2 textured copper "
                 f"(~{layer_stat.copper_coverage_ratio * 100.0:.1f}% of {layer_stat.available_area_mm2:.0f} mm^2 open area); "
                 f"obstacles={layer_stat.pads} pads/{layer_stat.tracks} tracks/{layer_stat.vias} vias/{layer_stat.footprints} footprints"

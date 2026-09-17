@@ -15,8 +15,13 @@ from shapely.ops import nearest_points, unary_union
 from curves.dragon_curve import dragon_curve_points
 from curves.gosper_curve import gosper_curve_points
 from curves.koch_snowflake_curve import koch_snowflake_points
+from curves.multifold_rosette import multifold_rosette_points
+from curves.phyllotaxis_spiral import phyllotaxis_spiral_points
 from curves.sierpinski_arrowhead_curve import sierpinski_arrowhead_curve_points
+from curves.superformula_motif import superformula_motif_points
 from curves.selfavoiding_maze_path import self_avoiding_maze_path_points
+from curves.truchet_weave import truchet_weave_points
+from curves.venation_branch import venation_branch_points
 from fractal_geometry import generate_peano_points
 
 CLEARANCE_MM = 0.25
@@ -33,11 +38,11 @@ TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 1.15
 FRONT_STRIPE_PITCH_MM = 0.82
-FRONT_STRIPE_WIDTH_MM = 0.42
+FRONT_STRIPE_WIDTH_MM = 0.44
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
 FRONT_STRIPE_WAVE_LENGTH_MM = 10.8
 BACK_STRIPE_PITCH_MM = 0.80
-BACK_STRIPE_WIDTH_MM = 0.4
+BACK_STRIPE_WIDTH_MM = 0.42
 BACK_STRIPE_WAVE_AMPLITUDE_MM = 0.5
 BACK_STRIPE_WAVE_LENGTH_MM = 9.6
 MIN_COMPONENT_AREA_MM2 = 0.8
@@ -46,6 +51,47 @@ MIN_MOTIF_AREA_MM2 = 0.18
 ARC_RESOLUTION = 6
 POLYGON_ERROR_MM = 0.02
 ZONE_NAME_PREFIX = "adc-fractal-fill-texture"
+PATTERN_REGION_RADIUS_MM = 8.6
+TRUCHET_REGION_RADIUS_MM = 6.9
+VENATION_REGION_RADIUS_MM = 5.8
+ACCENT_REGION_RADIUS_MM = 2.7
+ACCENT_REGION_HALO_MM = 3.0
+PATTERN_REGION_SPACING_MM = 4.2
+ACCENT_REGION_SPACING_MM = 3.2
+TRUCHET_TILE_MM = 1.32
+TRUCHET_ARC_SEGMENTS = 11
+VENATION_BASE_ATTRACTION_COUNT = 180
+VENATION_SLICE_COUNT = 3
+
+DOMINANT_PATTERN_TARGETS = {
+    "front": {
+        "truchet": ((0.24, 0.34), (0.66, 0.62), (0.50, 0.48)),
+        "venation": ((0.74, 0.28), (0.34, 0.72), (0.56, 0.56)),
+    },
+    "back": {
+        "truchet": ((0.74, 0.34), (0.34, 0.62), (0.52, 0.48)),
+        "venation": ((0.28, 0.28), (0.66, 0.72), (0.44, 0.56)),
+    },
+}
+
+ACCENT_PATTERN_TARGETS = {
+    "front": (
+        (0.18, 0.16),
+        (0.82, 0.18),
+        (0.22, 0.82),
+        (0.78, 0.82),
+        (0.50, 0.18),
+        (0.50, 0.82),
+    ),
+    "back": (
+        (0.18, 0.22),
+        (0.82, 0.22),
+        (0.24, 0.78),
+        (0.76, 0.78),
+        (0.50, 0.28),
+        (0.50, 0.72),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -101,7 +147,7 @@ class LayerTextureStats:
     footprints: int
     outer_rings: int
     holes: int
-    stripe_segments: int
+    pattern_segments: int
     exposed_area_mm2: float
     available_area_mm2: float
     copper_coverage_ratio: float
@@ -1202,6 +1248,336 @@ def _stripe_geometry(board_interior, open_area, config: LayerTextureConfig):
     return stripe_paths, geometry
 
 
+def _target_point(bounds: tuple[float, float, float, float], fractions: tuple[float, float]) -> tuple[float, float]:
+    min_x, min_y, max_x, max_y = bounds
+    return (min_x + ((max_x - min_x) * fractions[0]), min_y + ((max_y - min_y) * fractions[1]))
+
+
+def _candidate_centers(region, *, radius_mm: float, spacing_mm: float) -> list[tuple[float, float]]:
+    safe_region = region.buffer(-(radius_mm + 0.08)).buffer(0)
+    if safe_region.is_empty:
+        return []
+
+    min_x, min_y, max_x, max_y = safe_region.bounds
+    row_step = max(spacing_mm * 0.92, 1.2)
+    candidates: list[tuple[float, float]] = []
+    row_index = 0
+    y_value = min_y
+    while y_value <= max_y:
+        x_offset = (spacing_mm / 2.0) if row_index % 2 else 0.0
+        x_value = min_x + x_offset
+        while x_value <= max_x:
+            point = Point(x_value, y_value)
+            if safe_region.covers(point):
+                candidates.append((x_value, y_value))
+            x_value += spacing_mm
+        y_value += row_step
+        row_index += 1
+
+    if candidates:
+        return candidates
+    fallback = safe_region.representative_point()
+    return [fallback.coords[0]] if not fallback.is_empty else []
+
+
+def _pick_center(
+    candidates: list[tuple[float, float]],
+    *,
+    bounds: tuple[float, float, float, float],
+    target_fractions: tuple[tuple[float, float], ...],
+    selected: list[tuple[float, float]],
+    min_distance_mm: float,
+):
+    available = [
+        candidate
+        for candidate in candidates
+        if all(math.hypot(candidate[0] - used[0], candidate[1] - used[1]) >= min_distance_mm for used in selected)
+    ]
+    if not available:
+        return None
+
+    for fractions in target_fractions:
+        target = _target_point(bounds, fractions)
+        if not available:
+            break
+        return min(available, key=lambda candidate: math.hypot(candidate[0] - target[0], candidate[1] - target[1]))
+
+    if not selected:
+        return min(available, key=lambda candidate: (candidate[1], candidate[0]))
+    return max(
+        available,
+        key=lambda candidate: min(math.hypot(candidate[0] - used[0], candidate[1] - used[1]) for used in selected),
+    )
+
+
+def _circular_mask(region, center: tuple[float, float], radius_mm: float):
+    return region.intersection(Point(center).buffer(radius_mm, resolution=ARC_RESOLUTION)).buffer(0)
+
+
+def _map_normalized_polyline(
+    points: Iterable[tuple[float, float]],
+    *,
+    bounds: tuple[float, float, float, float],
+) -> list[tuple[float, float]]:
+    min_x, min_y, max_x, max_y = bounds
+    span_x = max(max_x - min_x, 1e-6)
+    span_y = max(max_y - min_y, 1e-6)
+    return [(min_x + (x * span_x), min_y + (y * span_y)) for x, y in points]
+
+
+def _paths_to_geometry(
+    paths: Iterable[Iterable[tuple[float, float]]],
+    *,
+    bounds: tuple[float, float, float, float],
+    width_mm: float,
+    region,
+):
+    polygons = []
+    path_count = 0
+    for path in paths:
+        coords = _map_normalized_polyline(path, bounds=bounds)
+        if len(coords) < 2:
+            continue
+        line = LineString(coords)
+        polygons.append(line.buffer(width_mm / 2.0, cap_style=1, join_style=1, resolution=ARC_RESOLUTION))
+        path_count += 1
+    if not polygons:
+        return GeometryCollection(), 0
+    geometry = unary_union(polygons).intersection(region).buffer(0)
+    return geometry, path_count
+
+
+def _truchet_region_geometry(region, *, seed: int, width_mm: float):
+    if region.is_empty:
+        return GeometryCollection(), 0
+    min_x, min_y, max_x, max_y = region.bounds
+    center_x, center_y = region.centroid.coords[0]
+    width = max_x - min_x
+    height = max_y - min_y
+    columns = max(4, int(math.ceil(width / TRUCHET_TILE_MM)) + 2)
+    rows = max(4, int(math.ceil(height / TRUCHET_TILE_MM)) + 2)
+    total_width = columns * TRUCHET_TILE_MM
+    total_height = rows * TRUCHET_TILE_MM
+    bounds = (
+        center_x - (total_width / 2.0),
+        center_y - (total_height / 2.0),
+        center_x + (total_width / 2.0),
+        center_y + (total_height / 2.0),
+    )
+    return _paths_to_geometry(
+        truchet_weave_points(columns, rows, seed=seed, arc_segments=TRUCHET_ARC_SEGMENTS),
+        bounds=bounds,
+        width_mm=width_mm,
+        region=region,
+    )
+
+
+def _venation_paths(seed: int, slice_index: int) -> list[list[tuple[float, float]]]:
+    root_y = 0.06 if slice_index % 2 == 0 else 0.94
+    second_root_y = 0.14 if slice_index % 2 == 0 else 0.86
+    segments = venation_branch_points(
+        seed=seed + (slice_index * 17),
+        attraction_count=VENATION_BASE_ATTRACTION_COUNT + (slice_index * 22),
+        growth_step=0.034,
+        attraction_radius=0.17,
+        kill_radius=0.043,
+        max_iterations=620,
+        root_x=0.50,
+        root_y=root_y,
+        second_root_x=0.32 if slice_index % 2 == 0 else 0.68,
+        second_root_y=second_root_y,
+    )
+    return [[start, end] for start, end in segments]
+
+
+def _venation_region_geometry(region, *, seed: int, width_mm: float):
+    if region.is_empty:
+        return GeometryCollection(), 0
+    min_x, min_y, max_x, max_y = region.bounds
+    span_x = max_x - min_x
+    slice_width = span_x / float(VENATION_SLICE_COUNT)
+    geometries = []
+    path_count = 0
+    for slice_index in range(VENATION_SLICE_COUNT):
+        bounds = (
+            min_x + (slice_index * slice_width),
+            min_y,
+            min_x + ((slice_index + 1) * slice_width),
+            max_y,
+        )
+        slice_geometry, slice_paths = _paths_to_geometry(
+            _venation_paths(seed, slice_index),
+            bounds=bounds,
+            width_mm=width_mm,
+            region=region,
+        )
+        if slice_geometry.is_empty:
+            continue
+        geometries.append(slice_geometry)
+        path_count += slice_paths
+    if not geometries:
+        return GeometryCollection(), 0
+    return unary_union(geometries).buffer(0), path_count
+
+
+def _accent_geometry(kind: str, center: tuple[float, float], *, radius_mm: float, config: LayerTextureConfig, seed: int):
+    region = Point(center).buffer(radius_mm, resolution=ARC_RESOLUTION)
+    bounds = (center[0] - radius_mm, center[1] - radius_mm, center[0] + radius_mm, center[1] + radius_mm)
+
+    if kind == "phyllotaxis":
+        return _paths_to_geometry(
+            phyllotaxis_spiral_points(
+                point_count=89,
+                primary_step=5,
+                secondary_step=8,
+                tertiary_step=13,
+                primary_offset=seed % 5,
+                secondary_offset=(seed + 2) % 8,
+                tertiary_offset=(seed + 5) % 13,
+            ),
+            bounds=bounds,
+            width_mm=max(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.42),
+            region=region,
+        )
+    if kind == "rosette":
+        rosette_mode = "rose" if seed % 2 == 0 else "star"
+        points = multifold_rosette_points(
+            mode=rosette_mode,
+            k_numerator=7 + (seed % 2),
+            k_denominator=1,
+            num_points=320,
+            star_vertices=9,
+            star_step=4,
+        )
+        return _paths_to_geometry(
+            [points],
+            bounds=bounds,
+            width_mm=max(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.4),
+            region=region,
+        )
+    if kind == "superformula":
+        points = superformula_motif_points(
+            a=1.0,
+            b=1.0,
+            m=5.0 + float(seed % 3),
+            n1=0.3,
+            n2=1.7,
+            n3=1.7,
+            num_points=420,
+        )
+        return _paths_to_geometry(
+            [points],
+            bounds=bounds,
+            width_mm=max(TEXTURE_LINE_WIDTH_FINE_MM, config.stripe_width_mm * 0.4),
+            region=region,
+        )
+    raise ValueError(f"unsupported accent type {kind}")
+
+
+def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfig):
+    stripe_paths, stripe_geometry = _stripe_geometry(board_interior, open_area, config)
+    pattern_segments = len(stripe_paths)
+    safe_open_area = open_area.intersection(board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)).buffer(0)
+    if safe_open_area.is_empty:
+        return stripe_paths, stripe_geometry
+
+    selected_centers: list[tuple[float, float]] = []
+    replacement_masks = []
+    replacement_parts = []
+    bounds = safe_open_area.bounds
+
+    dominant_candidates = _candidate_centers(
+        safe_open_area,
+        radius_mm=PATTERN_REGION_RADIUS_MM,
+        spacing_mm=PATTERN_REGION_SPACING_MM,
+    )
+    if dominant_candidates:
+        target_map = DOMINANT_PATTERN_TARGETS[config.label]
+        truchet_center = _pick_center(
+            dominant_candidates,
+            bounds=bounds,
+            target_fractions=target_map["truchet"],
+            selected=selected_centers,
+            min_distance_mm=PATTERN_REGION_RADIUS_MM * 1.7,
+        )
+        if truchet_center is not None:
+            selected_centers.append(truchet_center)
+            truchet_mask = _circular_mask(safe_open_area, truchet_center, TRUCHET_REGION_RADIUS_MM)
+            truchet_geometry, truchet_segments = _truchet_region_geometry(
+                truchet_mask,
+                seed=23 if config.label == "front" else 41,
+                width_mm=max(config.stripe_width_mm, 0.38),
+            )
+            if not truchet_geometry.is_empty:
+                replacement_masks.append(truchet_mask)
+                replacement_parts.append(truchet_geometry)
+                pattern_segments += truchet_segments
+
+        venation_center = _pick_center(
+            dominant_candidates,
+            bounds=bounds,
+            target_fractions=target_map["venation"],
+            selected=selected_centers,
+            min_distance_mm=PATTERN_REGION_RADIUS_MM * 1.7,
+        )
+        if venation_center is not None:
+            selected_centers.append(venation_center)
+            venation_mask = _circular_mask(safe_open_area, venation_center, VENATION_REGION_RADIUS_MM)
+            venation_geometry, venation_segments = _venation_region_geometry(
+                venation_mask,
+                seed=59 if config.label == "front" else 83,
+                width_mm=max(config.stripe_width_mm * 0.74, 0.28),
+            )
+            if not venation_geometry.is_empty:
+                replacement_masks.append(venation_mask)
+                replacement_parts.append(venation_geometry)
+                pattern_segments += venation_segments
+
+    accent_candidates = _candidate_centers(
+        safe_open_area,
+        radius_mm=ACCENT_REGION_HALO_MM,
+        spacing_mm=ACCENT_REGION_SPACING_MM,
+    )
+    accent_plan = ("rosette", "phyllotaxis", "superformula", "rosette", "phyllotaxis")
+    accent_centers: list[tuple[float, float]] = []
+    for index, accent_type in enumerate(accent_plan):
+        accent_center = _pick_center(
+            accent_candidates,
+            bounds=bounds,
+            target_fractions=(ACCENT_PATTERN_TARGETS[config.label][index],),
+            selected=[*selected_centers, *accent_centers],
+            min_distance_mm=ACCENT_REGION_HALO_MM * 2.0,
+        )
+        if accent_center is None:
+            continue
+        accent_centers.append(accent_center)
+        accent_halo = _circular_mask(safe_open_area, accent_center, ACCENT_REGION_HALO_MM)
+        accent_region = _circular_mask(safe_open_area, accent_center, ACCENT_REGION_RADIUS_MM)
+        accent_geometry, accent_segments = _accent_geometry(
+            accent_type,
+            accent_center,
+            radius_mm=ACCENT_REGION_RADIUS_MM,
+            config=config,
+            seed=index + (7 if config.label == "front" else 19),
+        )
+        accent_geometry = accent_geometry.intersection(accent_region).buffer(0)
+        if accent_geometry.is_empty:
+            continue
+        replacement_masks.append(accent_halo)
+        replacement_parts.append(accent_geometry)
+        pattern_segments += accent_segments
+
+    if not replacement_parts:
+        return stripe_paths, stripe_geometry
+
+    replacement_mask = unary_union(replacement_masks).buffer(0)
+    base_geometry = stripe_geometry.difference(replacement_mask).buffer(0)
+    final_geometry = unary_union([base_geometry, *replacement_parts]).intersection(open_area).intersection(board_interior).buffer(0)
+    if final_geometry.is_empty:
+        raise ValueError(f"{config.layer_name} decorative pattern mix produced no copper geometry")
+    return pattern_segments, final_geometry
+
+
 def _line_art_geometry(board_interior, open_area, anchors: list[Polygon]):
     line_paths = _line_art_paths(board_interior, open_area, anchors)
     motif_parts = [
@@ -1503,7 +1879,7 @@ def apply_continuous_texture_fill(
         if open_area.is_empty:
             raise ValueError(f"{config.layer_name} open board area vanished after obstacle subtraction")
 
-        stripe_paths, final_geometry = _stripe_geometry(board_interior, open_area, config)
+        pattern_segments, final_geometry = _mixed_pattern_geometry(board_interior, open_area, config)
         layer_stat = LayerTextureStats(
                 label=config.label,
                 layer_name=config.layer_name,
@@ -1514,7 +1890,7 @@ def apply_continuous_texture_fill(
                 footprints=footprints,
                 outer_rings=_count_outer_rings(final_geometry),
                 holes=_count_holes(final_geometry),
-                stripe_segments=len(stripe_paths),
+                pattern_segments=pattern_segments,
                 exposed_area_mm2=final_geometry.area,
                 available_area_mm2=open_area.area,
                 copper_coverage_ratio=(final_geometry.area / max(open_area.area, 1e-6)),
@@ -1536,6 +1912,7 @@ def apply_continuous_texture_fill(
         layer_stats=tuple(layer_stat for _config, _geometry, layer_stat in prepared_layers),
         maze_motif=(
             "filled copper graphic polygons on F.Cu and B.Cu built from dense non-bridging "
-            "wavy stripe segments clipped against per-layer real-copper obstacle unions"
+            "wavy stripe weave with Truchet windows, venation windows, and sparse phyllotaxis/"
+            "rosette/superformula accents clipped against per-layer real-copper obstacle unions"
         ),
     )
