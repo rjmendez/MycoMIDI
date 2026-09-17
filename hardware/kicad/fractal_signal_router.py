@@ -7,99 +7,47 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import pcbnew
-except ImportError as exc:  # pragma: no cover - only hit outside KiCad runtime.
-    raise SystemExit(
-        "pcbnew is required. Run this script inside KiCad's Python environment or the kicad/kicad:9.0 container."
-    ) from exc
-
-from shapely.geometry import LineString
-from shapely.ops import unary_union
-
-from adc_texture_fill import (
-    CLEARANCE_MM,
-    _board_outline,
-    _courtyard_or_body_polygon,
-    _exact_pad_polygon,
-    _track_polygon,
-    _via_polygon,
-)
-from fractal_geometry import format_mm
+from curves.dragon_curve import dragon_curve_points
+from curves.gosper_curve import gosper_curve_points
+from curves.selfavoiding_maze_path import self_avoiding_maze_path_points
+from curves.sierpinski_arrowhead_curve import sierpinski_arrowhead_curve_points
+from fractal_geometry import format_mm, generate_hilbert_points, generate_moore_points, generate_peano_points
 from lib.kicad_sexpr_cst import List, parse, serialize
 
 DEFAULT_INPUT = Path("hardware/kicad/adc_board/adc_board_8ch.kicad_pcb")
 DEFAULT_OUTPUT = DEFAULT_INPUT
 SEGMENT_EPSILON_MM = 0.0005
-CLEARANCE_TOLERANCE_MM = 0.03
 
 
 @dataclass(frozen=True)
 class RoutePlan:
     net_name: str
+    family: str
     layer: str
-    style: str
     start: tuple[float, float]
     end: tuple[float, float]
-    left_lane_x: float | None = None
-    band_start: tuple[float, float] | None = None
-    band_end: tuple[float, float] | None = None
-    right_lane_x: float | None = None
+    left_lane_x: float
+    band_start: tuple[float, float]
+    band_end: tuple[float, float]
+    right_lane_x: float
+    spread_mm: float
     width_mm: float = 0.2
     preserve_segments: tuple[tuple[tuple[float, float], tuple[float, float]], ...] = ()
-    tooth_counts: tuple[int, ...] = (11, 10, 9, 8, 7, 6)
-    amplitudes_mm: tuple[float, ...] = (2.4, 2.0, 1.6, 1.3, 1.0, 0.8)
+    curve_args: tuple[tuple[str, int], ...] = ()
 
 
 ROUTE_PLANS: tuple[RoutePlan, ...] = (
     RoutePlan(
-        net_name="AIN0N",
-        layer="B.Cu",
-        style="direct",
-        start=(15.531, 12.0),
-        end=(42.1075, 38.5765),
-        preserve_segments=(
-            ((10.54, 12.0), (15.531, 12.0)),
-        ),
-        tooth_counts=(10, 9, 8, 7, 6),
-        amplitudes_mm=(1.9, 1.6, 1.3, 1.0, 0.8),
-    ),
-    RoutePlan(
-        net_name="AIN1P",
-        layer="B.Cu",
-        style="direct",
-        start=(14.728, 13.3655),
-        end=(40.4106, 39.0481),
-        preserve_segments=(
-            ((8.0, 14.54), (9.1745, 13.3655)),
-            ((9.1745, 13.3655), (14.728, 13.3655)),
-        ),
-        tooth_counts=(10, 9, 8, 7, 6),
-        amplitudes_mm=(1.8, 1.5, 1.2, 1.0, 0.8),
-    ),
-    RoutePlan(
-        net_name="AIN2P",
-        layer="B.Cu",
-        style="direct",
-        start=(14.5129, 15.8754),
-        end=(39.0382, 40.4007),
-        preserve_segments=(
-            ((8.0, 17.08), (9.2046, 15.8754)),
-            ((9.2046, 15.8754), (14.5129, 15.8754)),
-        ),
-        tooth_counts=(10, 9, 8, 7, 6),
-        amplitudes_mm=(1.7, 1.4, 1.15, 0.95, 0.75),
-    ),
-    RoutePlan(
         net_name="AIN3P",
+        family="peano",
         layer="B.Cu",
-        style="band",
         start=(13.4683, 23.3117),
         end=(35.8618, 45.7052),
         left_lane_x=13.8,
         band_start=(18.0, 46.0),
         band_end=(29.0, 46.0),
         right_lane_x=34.5,
+        spread_mm=4.8,
         preserve_segments=(
             ((9.27, 20.89), (8.0, 19.62)),
             ((10.063, 23.3117), (9.27, 22.5187)),
@@ -109,19 +57,19 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
             ((38.5975, 44.3338), (37.2261, 45.7052)),
             ((37.2261, 45.7052), (35.8618, 45.7052)),
         ),
-        tooth_counts=(8, 7, 6, 5),
-        amplitudes_mm=(2.8, 2.4, 2.0, 1.6, 1.2),
+        curve_args=(("order", 2),),
     ),
     RoutePlan(
-        net_name="AIN5P",
+        family="maze",
         layer="B.Cu",
-        style="band",
+        net_name="AIN5P",
         start=(13.3183, 28.3917),
         end=(31.5023, 46.5757),
         left_lane_x=13.2,
         band_start=(18.0, 58.8),
         band_end=(29.8, 58.8),
         right_lane_x=29.8,
+        spread_mm=5.4,
         preserve_segments=(
             ((8.0, 24.7), (9.27, 25.97)),
             ((9.27, 25.97), (9.27, 27.5987)),
@@ -129,132 +77,108 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
             ((10.063, 28.3917), (13.3183, 28.3917)),
             ((31.5023, 46.5757), (37.395, 46.5757)),
         ),
-        tooth_counts=(7, 6, 5, 4),
-        amplitudes_mm=(2.8, 2.4, 2.0, 1.6, 1.2),
+        curve_args=(("columns", 10), ("rows", 5), ("seed", 21)),
     ),
 )
 
-def _board_obstacle_union(
-    board: pcbnew.BOARD,
-    net_name: str,
-    layer_name: str,
-    clearance_mm: float,
+
+def _curve_kwargs(plan: RoutePlan) -> dict[str, int]:
+    return dict(plan.curve_args)
+
+
+def curve_points(plan: RoutePlan) -> list[tuple[float, float]]:
+    kwargs = _curve_kwargs(plan)
+    if plan.family == "hilbert":
+        return [(float(x), float(y)) for x, y in generate_hilbert_points(kwargs["order"])]
+    if plan.family == "dragon":
+        return dragon_curve_points(kwargs["order"])
+    if plan.family == "moore":
+        return generate_moore_points(kwargs["order"])
+    if plan.family == "peano":
+        return generate_peano_points(kwargs["order"])
+    if plan.family == "gosper":
+        return gosper_curve_points(kwargs["order"])
+    if plan.family == "sierpinski":
+        return sierpinski_arrowhead_curve_points(kwargs["order"])
+    if plan.family == "maze":
+        return self_avoiding_maze_path_points(
+            kwargs["columns"],
+            kwargs["rows"],
+            seed=kwargs.get("seed", 0),
+        )
+    raise ValueError(f"unsupported curve family {plan.family!r}")
+
+
+def map_points(
+    points: list[tuple[float, float]],
     *,
-    include_courtyards: bool,
-):
-    layer_id = board.GetLayerID(layer_name)
-    geometries = []
-    for footprint in board.GetFootprints():
-        if include_courtyards:
-            geometries.append(_courtyard_or_body_polygon(footprint))
-        for pad in footprint.Pads():
-            if pad.GetNetname() == net_name:
-                continue
-            geometries.append(_exact_pad_polygon(pad, clearance_mm))
-    for item in board.GetTracks():
-        if isinstance(item, pcbnew.PCB_VIA):
-            if item.GetNetname() == net_name:
-                continue
-            geometries.append(_via_polygon(item, clearance_mm))
-            continue
-        if item.GetLayer() != layer_id:
-            continue
-        if item.GetNetname() == net_name:
-            continue
-        geometries.append(_track_polygon(item, clearance_mm))
-    return unary_union(geometries).buffer(0)
-
-
-def _zigzag_body(
     start: tuple[float, float],
     end: tuple[float, float],
-    *,
-    tooth_count: int,
-    amplitude_mm: float,
-    phase_sign: int,
+    spread: float,
 ) -> list[tuple[float, float]]:
-    if tooth_count < 2:
-        raise ValueError("tooth_count must be at least 2")
+    if math.isclose(spread, 0.0, abs_tol=1e-12):
+        raise ValueError("spread must be non-zero")
+    if len(points) < 2:
+        raise ValueError("curve requires multiple points")
+
     sx, sy = start
     ex, ey = end
     dx = ex - sx
     dy = ey - sy
     length = math.hypot(dx, dy)
     if length <= 0:
-        raise ValueError("route endpoints must differ")
+        raise ValueError("start and end must differ")
+
+    first_x, first_y = points[0]
+    last_x, last_y = points[-1]
+    base_dx = last_x - first_x
+    base_dy = last_y - first_y
+    base_length = math.hypot(base_dx, base_dy)
+    if base_length <= 0:
+        raise ValueError("curve endpoints must differ")
+
+    base_tangent = (base_dx / base_length, base_dy / base_length)
+    base_normal = (-base_tangent[1], base_tangent[0])
     tangent = (dx / length, dy / length)
     normal = (-tangent[1], tangent[0])
 
-    body = [start]
-    for tooth_index in range(1, tooth_count):
-        u = tooth_index / float(tooth_count)
-        base_x = sx + (dx * u)
-        base_y = sy + (dy * u)
-        envelope = 0.72 + (0.28 * math.sin(math.pi * u))
-        offset = amplitude_mm * envelope * (phase_sign if tooth_index % 2 else -phase_sign)
-        body.append((base_x + (normal[0] * offset), base_y + (normal[1] * offset)))
-    body.append(end)
-    return body
+    relative_points = []
+    normal_values = []
+    for x, y in points:
+        rel_x = x - first_x
+        rel_y = y - first_y
+        u = (rel_x * base_tangent[0] + rel_y * base_tangent[1]) / base_length
+        v = rel_x * base_normal[0] + rel_y * base_normal[1]
+        relative_points.append((u, v))
+        normal_values.append(v)
 
+    first_v = relative_points[0][1]
+    last_v = relative_points[-1][1]
+    adjusted_points = []
+    for u, v in relative_points:
+        baseline_v = ((1.0 - u) * first_v) + (u * last_v)
+        adjusted_points.append((u, v - baseline_v))
 
-def _append_point(points: list[tuple[float, float]], point: tuple[float, float]) -> None:
-    if not points or not _points_close(points[-1], point):
-        points.append(point)
+    normal_values = [v for _, v in adjusted_points]
+    min_v = min(normal_values)
+    max_v = max(normal_values)
+    scale_v = max_v - min_v
+    if scale_v <= 0:
+        raise ValueError("curve has no transverse spread to map")
 
-
-def _candidate_route_points(
-    plan: RoutePlan,
-    *,
-    tooth_count: int,
-    amplitude_mm: float,
-    phase_sign: int,
-) -> list[tuple[float, float]]:
-    if plan.style == "direct":
-        return _zigzag_body(plan.start, plan.end, tooth_count=tooth_count, amplitude_mm=amplitude_mm, phase_sign=phase_sign)
-    if plan.style != "band" or plan.band_start is None or plan.band_end is None or plan.left_lane_x is None or plan.right_lane_x is None:
-        raise ValueError(f"unsupported route plan style {plan.style!r}")
-
-    points: list[tuple[float, float]] = []
-    for point in (
-        plan.start,
-        (plan.left_lane_x, plan.start[1]),
-        (plan.left_lane_x, plan.band_start[1]),
-        plan.band_start,
-    ):
-        _append_point(points, point)
-    for point in _zigzag_body(plan.band_start, plan.band_end, tooth_count=tooth_count, amplitude_mm=amplitude_mm, phase_sign=phase_sign)[1:]:
-        _append_point(points, point)
-    for point in (
-        (plan.right_lane_x, plan.band_end[1]),
-        (plan.right_lane_x, plan.end[1]),
-        plan.end,
-    ):
-        _append_point(points, point)
-    return points
-
-
-def _path_is_clear(
-    points: list[tuple[float, float]],
-    *,
-    width_mm: float,
-    obstacle_union,
-    board_interior,
-    clearance_mm: float,
-) -> bool:
-    if len(points) < 2 or not LineString(points).is_simple:
-        return False
-    safe_interior = board_interior.buffer(-((width_mm / 2.0) + CLEARANCE_TOLERANCE_MM))
-    if safe_interior.is_empty:
-        return False
-    guard_mm = (width_mm / 2.0) + clearance_mm
-    for start, end in zip(points[:-1], points[1:], strict=True):
-        segment = LineString([start, end])
-        segment_guard = segment.buffer(guard_mm, cap_style=1, join_style=1)
-        if not segment_guard.within(safe_interior):
-            return False
-        if not obstacle_union.is_empty and segment_guard.intersects(obstacle_union):
-            return False
-    return True
+    spread_sign = 1.0 if spread > 0 else -1.0
+    spread_abs = abs(spread)
+    mapped = []
+    for u, v in adjusted_points:
+        normalized_v = (v - min_v) / scale_v
+        if spread_sign < 0:
+            normalized_v = 1.0 - normalized_v
+        mx = sx + tangent[0] * (length * u) + normal[0] * (spread_abs * normalized_v)
+        my = sy + tangent[1] * (length * u) + normal[1] * (spread_abs * normalized_v)
+        mapped.append((mx, my))
+    mapped[0] = start
+    mapped[-1] = end
+    return mapped
 
 
 def build_segments(
@@ -281,32 +205,56 @@ def build_segments(
     return "".join(chunks)
 
 
-def build_route_points(
-    plan: RoutePlan,
-    *,
-    obstacle_union,
-    board_interior,
-    width_mm: float,
-    clearance_mm: float,
-) -> list[tuple[float, float]]:
-    for tooth_count in plan.tooth_counts:
-        for amplitude_mm in plan.amplitudes_mm:
-            for phase_sign in (1, -1):
-                points = _candidate_route_points(
-                    plan,
-                    tooth_count=tooth_count,
-                    amplitude_mm=amplitude_mm,
-                    phase_sign=phase_sign,
-                )
-                if _path_is_clear(
-                    points,
-                    width_mm=width_mm,
-                    obstacle_union=obstacle_union,
-                    board_interior=board_interior,
-                    clearance_mm=clearance_mm,
-                ):
-                    return points
-    raise ValueError(f"failed to find a DRC-safe acute zigzag route for {plan.net_name}")
+def orthogonalize_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    orthogonal: list[tuple[float, float]] = [points[0]]
+    horizontal_first = True
+    for ex, ey in points[1:]:
+        sx, sy = orthogonal[-1]
+        if math.isclose(sx, ex, abs_tol=1e-9) or math.isclose(sy, ey, abs_tol=1e-9):
+            orthogonal.append((ex, ey))
+            continue
+        corner = (ex, sy) if horizontal_first else (sx, ey)
+        if not _points_close(orthogonal[-1], corner):
+            orthogonal.append(corner)
+        orthogonal.append((ex, ey))
+        horizontal_first = not horizontal_first
+
+    simplified: list[tuple[float, float]] = [orthogonal[0]]
+    for point in orthogonal[1:]:
+        if _points_close(point, simplified[-1]):
+            continue
+        if len(simplified) >= 2:
+            ax, ay = simplified[-2]
+            bx, by = simplified[-1]
+            cx, cy = point
+            if (math.isclose(ax, bx, abs_tol=1e-9) and math.isclose(bx, cx, abs_tol=1e-9)) or (
+                math.isclose(ay, by, abs_tol=1e-9) and math.isclose(by, cy, abs_tol=1e-9)
+            ):
+                simplified[-1] = point
+                continue
+        simplified.append(point)
+    return simplified
+
+
+def build_route_points(plan: RoutePlan) -> list[tuple[float, float]]:
+    curve = orthogonalize_points(
+        map_points(
+        curve_points(plan),
+        start=plan.band_start,
+        end=plan.band_end,
+        spread=plan.spread_mm,
+    ))
+    return [
+        plan.start,
+        (plan.left_lane_x, plan.start[1]),
+        (plan.left_lane_x, plan.band_start[1]),
+        plan.band_start,
+        *curve[1:-1],
+        plan.band_end,
+        (plan.right_lane_x, plan.band_end[1]),
+        (plan.right_lane_x, plan.end[1]),
+        plan.end,
+    ]
 
 
 def _node_float_pair(node: List, name: str) -> tuple[float, float]:
@@ -398,43 +346,27 @@ def _insert_segments(text: str, segment_block: str) -> str:
     return text[: match.start()] + "\n" + segment_block.rstrip() + text[match.start() :]
 
 
-def rewrite_board(input_path: Path, output_path: Path) -> list[tuple[str, int, float]]:
+def rewrite_board(input_path: Path, output_path: Path) -> list[tuple[str, str]]:
     original = input_path.read_bytes()
     board = _board_root(original)
     net_ids = _net_table(board)
     widths = _remove_target_segments(board, net_ids)
     base_text = serialize(parse(serialize(board))).decode("utf-8", "surrogateescape")
-    kicad_board = pcbnew.LoadBoard(str(input_path))
-    board_interior = _board_outline(kicad_board)
 
     generated_blocks = []
     summary = []
     for plan in ROUTE_PLANS:
-        width_mm = widths[plan.net_name]
-        obstacle_union = _board_obstacle_union(
-            kicad_board,
-            plan.net_name,
-            plan.layer,
-            CLEARANCE_MM,
-            include_courtyards=(plan.style == "band"),
-        )
-        mapped = build_route_points(
-            plan,
-            obstacle_union=obstacle_union,
-            board_interior=board_interior,
-            width_mm=width_mm,
-            clearance_mm=CLEARANCE_MM,
-        )
+        mapped = build_route_points(plan)
         net_id = net_ids[plan.net_name]
         generated_blocks.append(
             build_segments(
                 mapped,
-                width=width_mm,
+                width=widths[plan.net_name],
                 layer=plan.layer,
                 net_id=net_id,
             )
         )
-        summary.append((plan.net_name, len(mapped) - 1, width_mm))
+        summary.append((plan.net_name, plan.family))
 
     updated = _insert_segments(base_text, "".join(generated_blocks))
     output_path.write_text(updated, encoding="utf-8")
@@ -451,8 +383,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     summary = rewrite_board(args.input, args.output)
-    for net_name, segment_count, width_mm in summary:
-        print(f"{net_name}: routed with {segment_count} sharp segments at {width_mm:.3f} mm width")
+    for net_name, family in summary:
+        print(f"{net_name}: routed with {family}")
     print(f"wrote {args.output}")
     return 0
 
