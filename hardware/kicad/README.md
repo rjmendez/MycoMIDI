@@ -222,8 +222,8 @@ The real-board profile:
 - generates dense, non-intersecting wavy stripe centerlines across nearly the
   full open board area on both `F.Cu` and `B.Cu`, then swaps a few larger
   irregular swaths to alternate curve families (`Truchet` weave and venation
-  branching) plus only tiny corner phyllotaxis / rosette micro-accents, all
-  clipped against that layer's obstacle union
+  branching) plus only a tiny corner rosette micro-accent, all clipped against
+  that layer's obstacle union
 - buffers the surviving pattern segments into isolated decorative copper
   islands and writes them back as filled `gr_poly` copper graphics, so the art
   does not need to bridge back to `GND` anchors or merge into one connected

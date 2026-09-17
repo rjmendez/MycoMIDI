@@ -1582,7 +1582,10 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
 
     accent_candidates = _candidate_centers(safe_open_area, radius_mm=ACCENT_SIZE_MM, spacing_mm=ACCENT_REGION_SPACING_MM)
     if accent_candidates and ACCENT_PATTERN_TARGETS[config.label]:
-        accent_type = "rosette" if config.label == "front" else "phyllotaxis"
+        accent_type = "rosette" if config.label == "front" else None
+        if accent_type is None:
+            accent_candidates = []
+    if accent_candidates and ACCENT_PATTERN_TARGETS[config.label]:
         accent_center = _pick_center(
             accent_candidates,
             bounds=safe_open_area.bounds,
@@ -1949,7 +1952,7 @@ def apply_continuous_texture_fill(
         layer_stats=tuple(layer_stat for _config, _geometry, layer_stat in prepared_layers),
         maze_motif=(
             "filled copper graphic polygons on F.Cu and B.Cu built from dense non-bridging "
-            "wavy stripe weave with irregular Truchet and venation region swaps plus tiny "
-            "phyllotaxis/rosette micro-accents clipped against per-layer real-copper obstacle unions"
+            "wavy stripe weave with irregular Truchet and venation region swaps plus a tiny "
+            "rosette micro-accent clipped against per-layer real-copper obstacle unions"
         ),
     )
