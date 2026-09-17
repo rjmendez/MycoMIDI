@@ -250,10 +250,11 @@ The real-board profile:
 
 ### Fractal signal rerouting on the real ADC board
 
-`hardware/kicad/fractal_signal_router.py` now applies the **second visual pass**
-on the real `adc_board_8ch.kicad_pcb`: it preserves the earlier verified
-lightweight reroutes on `AIN0N`, `AIN1P`, and `AIN2P`, then amplifies the lower
-`AIN3P` and `AIN5P` routes into much more visually obvious procedural detours.
+`hardware/kicad/fractal_signal_router.py` now applies the **acute-angle visual
+pass** on the real `adc_board_8ch.kicad_pcb`: it preserves the earlier verified
+lightweight reroutes on `AIN0N`, `AIN1P`, and `AIN2P`, then rewrites the lower
+`AIN3P` and `AIN5P` routes into sharper empty-space-filling zigzag windows on
+`B.Cu`.
 
 Run it after the clean autoroute, then re-run DRC:
 
@@ -272,7 +273,7 @@ python3 hardware/kicad/fractal_signal_router.py \
 The checked-in branch now contains five procedurally rerouted AIN nets:
 
 - inherited light reroutes: `AIN0N`, `AIN1P`, `AIN2P`
-- stronger visual-pass reroutes: `AIN3P`, `AIN5P`
+- stronger acute-angle reroutes: `AIN3P`, `AIN5P`
 - untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
   `DOUT`, `AVDD`, `DVDD`, `REFP`, and the remaining AIN nets
 - no GND-zone regeneration or decorative-fill edits; the visual-pass script

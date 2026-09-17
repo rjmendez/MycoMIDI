@@ -39,15 +39,15 @@ class RoutePlan:
 ROUTE_PLANS: tuple[RoutePlan, ...] = (
     RoutePlan(
         net_name="AIN3P",
-        family="gosper",
+        family="peano",
         layer="B.Cu",
         start=(13.4683, 23.3117),
         end=(35.8618, 45.7052),
         left_lane_x=13.8,
         band_start=(18.0, 46.0),
-        band_end=(30.0, 46.0),
+        band_end=(29.0, 46.0),
         right_lane_x=34.5,
-        spread_mm=2.6,
+        spread_mm=4.8,
         preserve_segments=(
             ((9.27, 20.89), (8.0, 19.62)),
             ((10.063, 23.3117), (9.27, 22.5187)),
@@ -66,10 +66,10 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
         start=(13.3183, 28.3917),
         end=(31.5023, 46.5757),
         left_lane_x=13.2,
-        band_start=(18.0, 60.5),
-        band_end=(28.5, 60.5),
-        right_lane_x=31.6,
-        spread_mm=1.8,
+        band_start=(18.0, 58.8),
+        band_end=(29.8, 58.8),
+        right_lane_x=29.8,
+        spread_mm=5.4,
         preserve_segments=(
             ((8.0, 24.7), (9.27, 25.97)),
             ((9.27, 25.97), (9.27, 27.5987)),
@@ -77,7 +77,7 @@ ROUTE_PLANS: tuple[RoutePlan, ...] = (
             ((10.063, 28.3917), (13.3183, 28.3917)),
             ((31.5023, 46.5757), (37.395, 46.5757)),
         ),
-        curve_args=(("columns", 8), ("rows", 4), ("seed", 21)),
+        curve_args=(("columns", 10), ("rows", 5), ("seed", 21)),
     ),
 )
 
@@ -205,13 +205,45 @@ def build_segments(
     return "".join(chunks)
 
 
+def orthogonalize_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    orthogonal: list[tuple[float, float]] = [points[0]]
+    horizontal_first = True
+    for ex, ey in points[1:]:
+        sx, sy = orthogonal[-1]
+        if math.isclose(sx, ex, abs_tol=1e-9) or math.isclose(sy, ey, abs_tol=1e-9):
+            orthogonal.append((ex, ey))
+            continue
+        corner = (ex, sy) if horizontal_first else (sx, ey)
+        if not _points_close(orthogonal[-1], corner):
+            orthogonal.append(corner)
+        orthogonal.append((ex, ey))
+        horizontal_first = not horizontal_first
+
+    simplified: list[tuple[float, float]] = [orthogonal[0]]
+    for point in orthogonal[1:]:
+        if _points_close(point, simplified[-1]):
+            continue
+        if len(simplified) >= 2:
+            ax, ay = simplified[-2]
+            bx, by = simplified[-1]
+            cx, cy = point
+            if (math.isclose(ax, bx, abs_tol=1e-9) and math.isclose(bx, cx, abs_tol=1e-9)) or (
+                math.isclose(ay, by, abs_tol=1e-9) and math.isclose(by, cy, abs_tol=1e-9)
+            ):
+                simplified[-1] = point
+                continue
+        simplified.append(point)
+    return simplified
+
+
 def build_route_points(plan: RoutePlan) -> list[tuple[float, float]]:
-    curve = map_points(
+    curve = orthogonalize_points(
+        map_points(
         curve_points(plan),
         start=plan.band_start,
         end=plan.band_end,
         spread=plan.spread_mm,
-    )
+    ))
     return [
         plan.start,
         (plan.left_lane_x, plan.start[1]),
