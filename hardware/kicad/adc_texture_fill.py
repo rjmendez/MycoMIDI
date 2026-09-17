@@ -604,18 +604,9 @@ def _distributed_component_seeds(
         return []
 
     references = anchor_cells[:] if anchor_cells else []
-    if references:
-        first = max(
-            component,
-            key=lambda cell: min(
-                math.hypot(cell_points[cell][0] - cell_points[anchor][0], cell_points[cell][1] - cell_points[anchor][1])
-                for anchor in references
-            ),
-        )
-    else:
-        centroid_x = sum(cell_points[cell][0] for cell in component) / len(component)
-        centroid_y = sum(cell_points[cell][1] for cell in component) / len(component)
-        first = max(component, key=lambda cell: math.hypot(cell_points[cell][0] - centroid_x, cell_points[cell][1] - centroid_y))
+    centroid_x = sum(cell_points[cell][0] for cell in component) / len(component)
+    centroid_y = sum(cell_points[cell][1] for cell in component) / len(component)
+    first = min(component, key=lambda cell: math.hypot(cell_points[cell][0] - centroid_x, cell_points[cell][1] - centroid_y))
 
     selected = [first]
     while len(selected) < min(count, len(component)):
@@ -624,7 +615,7 @@ def _distributed_component_seeds(
             key=lambda cell: min(
                 math.hypot(cell_points[cell][0] - cell_points[other][0], cell_points[cell][1] - cell_points[other][1])
                 for other in [*references, *selected]
-            ),
+            ) - (0.35 * math.hypot(cell_points[cell][0] - centroid_x, cell_points[cell][1] - centroid_y)),
         )
         if candidate in selected:
             break
@@ -669,7 +660,7 @@ def _sparse_component_walk_points(
                 next_dx = candidate[0] - path[-1][0]
                 next_dy = candidate[1] - path[-1][1]
                 turn_penalty = 0.0 if (prev_dx, prev_dy) != (next_dx, next_dy) else 0.35
-            radial_bias = -math.hypot(cell_points[candidate][0] - center_x, cell_points[candidate][1] - center_y)
+            radial_bias = math.hypot(cell_points[candidate][0] - center_x, cell_points[candidate][1] - center_y)
             return (dead_end_penalty, turn_penalty, radial_bias, rng.random())
 
         def search() -> bool:
