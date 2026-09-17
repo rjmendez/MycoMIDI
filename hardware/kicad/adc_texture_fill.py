@@ -1366,9 +1366,19 @@ def _regularize_geometry(geometry, *, trim_mm: float = SLIVER_TRIM_MM):
     return opened.buffer(trim_mm, join_style=1, resolution=ARC_RESOLUTION).buffer(0)
 
 
-def _prune_compact_patches(geometry, *, max_area_mm2: float, max_aspect_ratio: float):
+def _prune_compact_patches(
+    geometry,
+    *,
+    max_area_mm2: float,
+    max_aspect_ratio: float,
+    max_span_mm: float | None = None,
+    min_area_mm2: float = 0.0,
+):
     kept = []
     for polygon in _iter_polygons(geometry):
+        min_x, min_y, max_x, max_y = polygon.bounds
+        width = max_x - min_x
+        height = max_y - min_y
         if polygon.area > max_area_mm2:
             kept.append(polygon)
             continue
@@ -1383,7 +1393,12 @@ def _prune_compact_patches(geometry, *, max_area_mm2: float, max_aspect_ratio: f
         short_edge = edge_lengths[0]
         long_edge = edge_lengths[-1]
         aspect_ratio = float("inf") if short_edge <= 1e-6 else long_edge / short_edge
-        if aspect_ratio > max_aspect_ratio:
+        should_prune = (
+            polygon.area >= min_area_mm2
+            and aspect_ratio <= max_aspect_ratio
+            and (max_span_mm is None or max(width, height) <= max_span_mm)
+        )
+        if not should_prune:
             kept.append(polygon)
     if not kept:
         return GeometryCollection()
@@ -1465,7 +1480,18 @@ def _truchet_region_geometry(region, *, seed: int, width_mm: float):
     )
     if not geometry.is_empty:
         geometry = _regularize_geometry(geometry, trim_mm=min(0.08, max(width_mm * 0.32, 0.055)))
-        geometry = _prune_compact_patches(geometry, max_area_mm2=0.72, max_aspect_ratio=2.6)
+        geometry = _prune_compact_patches(
+            geometry,
+            max_area_mm2=0.72,
+            max_aspect_ratio=2.6,
+        )
+        geometry = _prune_compact_patches(
+            geometry,
+            max_area_mm2=12.0,
+            max_aspect_ratio=5.5,
+            max_span_mm=14.0,
+            min_area_mm2=0.5,
+        )
     return geometry, path_count
 
 
@@ -1594,8 +1620,16 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
             width_mm=max(config.stripe_width_mm * 0.38, 0.17),
         )
         if not truchet_geometry.is_empty:
+            truchet_kept_mask = (
+                truchet_geometry.buffer(max(TRUCHET_TILE_MM * 0.42, config.stripe_width_mm * 1.2), join_style=1, resolution=ARC_RESOLUTION)
+                .intersection(truchet_mask)
+                .buffer(0)
+            )
             replacement_masks.append(truchet_mask)
             replacement_parts.append(truchet_geometry)
+            truchet_backfill = stripe_geometry.intersection(truchet_mask.difference(truchet_kept_mask)).buffer(0)
+            if not truchet_backfill.is_empty:
+                replacement_parts.append(truchet_backfill)
             pattern_segments += truchet_segments
 
     venation_mask = _dominant_region_mask(safe_open_area, config=config, pattern_name="venation")
