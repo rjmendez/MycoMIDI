@@ -132,7 +132,7 @@ def truchet_weave_points(columns: int, rows: int, *, seed: int = 0, arc_segments
 
     arcs: list[list[Point]] = []
     orientations = _orientation_grid(columns, rows, seed=seed)
-    corner_inset = 0.22
+    corner_inset = 0.26
 
     for row in range(rows):
         for column in range(columns):

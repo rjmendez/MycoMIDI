@@ -38,11 +38,11 @@ TEXTURE_LINE_WIDTH_FINE_MM = 0.15
 TEXTURE_BACKBONE_WIDTH_MM = 0.3
 TEXTURE_EDGE_MARGIN_MM = 1.15
 FRONT_STRIPE_PITCH_MM = 0.82
-FRONT_STRIPE_WIDTH_MM = 0.455
+FRONT_STRIPE_WIDTH_MM = 0.465
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
 FRONT_STRIPE_WAVE_LENGTH_MM = 10.8
 BACK_STRIPE_PITCH_MM = 0.80
-BACK_STRIPE_WIDTH_MM = 0.43
+BACK_STRIPE_WIDTH_MM = 0.44
 BACK_STRIPE_WAVE_AMPLITUDE_MM = 0.5
 BACK_STRIPE_WAVE_LENGTH_MM = 9.6
 MIN_COMPONENT_AREA_MM2 = 0.8
@@ -58,7 +58,7 @@ ACCENT_REGION_RADIUS_MM = 2.7
 ACCENT_REGION_HALO_MM = 3.0
 PATTERN_REGION_SPACING_MM = 4.2
 ACCENT_REGION_SPACING_MM = 3.2
-TRUCHET_TILE_MM = 1.12
+TRUCHET_TILE_MM = 1.3
 TRUCHET_ARC_SEGMENTS = 11
 VENATION_BASE_ATTRACTION_COUNT = 180
 VENATION_SLICE_COUNT = 3
@@ -1366,6 +1366,30 @@ def _regularize_geometry(geometry, *, trim_mm: float = SLIVER_TRIM_MM):
     return opened.buffer(trim_mm, join_style=1, resolution=ARC_RESOLUTION).buffer(0)
 
 
+def _prune_compact_patches(geometry, *, max_area_mm2: float, max_aspect_ratio: float):
+    kept = []
+    for polygon in _iter_polygons(geometry):
+        if polygon.area > max_area_mm2:
+            kept.append(polygon)
+            continue
+        rect = polygon.minimum_rotated_rectangle
+        coords = list(rect.exterior.coords)
+        if len(coords) < 5:
+            continue
+        edge_lengths = sorted(
+            math.hypot(coords[index + 1][0] - coords[index][0], coords[index + 1][1] - coords[index][1])
+            for index in range(4)
+        )
+        short_edge = edge_lengths[0]
+        long_edge = edge_lengths[-1]
+        aspect_ratio = float("inf") if short_edge <= 1e-6 else long_edge / short_edge
+        if aspect_ratio > max_aspect_ratio:
+            kept.append(polygon)
+    if not kept:
+        return GeometryCollection()
+    return unary_union(kept).buffer(0)
+
+
 def _fraction_point(bounds: tuple[float, float, float, float], fractions: tuple[float, float]) -> tuple[float, float]:
     min_x, min_y, max_x, max_y = bounds
     return (min_x + ((max_x - min_x) * fractions[0]), min_y + ((max_y - min_y) * fractions[1]))
@@ -1432,13 +1456,17 @@ def _truchet_region_geometry(region, *, seed: int, width_mm: float):
         center_x + (total_width / 2.0),
         center_y + (total_height / 2.0),
     )
-    return _paths_to_geometry(
+    geometry, path_count = _paths_to_geometry(
         truchet_weave_points(columns, rows, seed=seed, arc_segments=TRUCHET_ARC_SEGMENTS),
         bounds=bounds,
         width_mm=width_mm,
         region=region,
         cap_style=2,
     )
+    if not geometry.is_empty:
+        geometry = _regularize_geometry(geometry, trim_mm=min(0.08, max(width_mm * 0.32, 0.055)))
+        geometry = _prune_compact_patches(geometry, max_area_mm2=0.72, max_aspect_ratio=2.6)
+    return geometry, path_count
 
 
 def _venation_paths(seed: int, slice_index: int) -> list[list[tuple[float, float]]]:
@@ -1563,11 +1591,13 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
         truchet_geometry, truchet_segments = _truchet_region_geometry(
             truchet_mask,
             seed=23 if config.label == "front" else 41,
-            width_mm=max(config.stripe_width_mm * 0.70, 0.28),
+            width_mm=max(config.stripe_width_mm * 0.38, 0.17),
         )
         if not truchet_geometry.is_empty:
             replacement_masks.append(
-                truchet_geometry.buffer(config.stripe_width_mm * 0.78, join_style=1, resolution=ARC_RESOLUTION).intersection(truchet_mask).buffer(0)
+                truchet_geometry.buffer(max(TRUCHET_TILE_MM * 0.42, config.stripe_width_mm * 1.2), join_style=1, resolution=ARC_RESOLUTION)
+                .intersection(truchet_mask)
+                .buffer(0)
             )
             replacement_parts.append(truchet_geometry)
             pattern_segments += truchet_segments
