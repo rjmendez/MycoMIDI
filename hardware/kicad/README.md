@@ -250,7 +250,9 @@ pass** on the real `adc_board_8ch.kicad_pcb`: relative to the `733533b`
 baseline it procedurally reroutes four additional non-timing-critical analog
 `B.Cu` runs (`AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`) plus five `F.Cu` runs
 (`AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`), while preserving the existing
-five rerouted AIN nets (`AIN0N`, `AIN1P`, `AIN2P`, `AIN3P`, `AIN5P`).
+five rerouted AIN nets (`AIN0N`, `AIN1P`, `AIN2P`, `AIN3P`, `AIN5P`). A later
+verified pass tightens `AIN0P`, `AIN2N`, and `AIN3P` into the same
+orthogonal maze-corridor style already used by `AIN5P`.
 
 Run it on top of the `733533b` board, regenerate the decorative weave so the
 new traces get fresh clearance cutouts, then re-run DRC:
@@ -283,9 +285,9 @@ PY
 The checked-in branch now contains fourteen procedurally rerouted AIN nets:
 
 - inherited light reroutes: `AIN0N`, `AIN1P`, `AIN2P`
-- new v2 light reroutes: `AIN0P`, `AIN2N`, `AIN3N`, `AIN4N`
+- new v2 light reroutes: `AIN3N`, `AIN4N`
+- upgraded maze-corridor reroutes: `AIN0P`, `AIN2N`, `AIN3P`, `AIN5P`
 - new v3 front-layer reroutes: `AIN1N`, `AIN4P`, `AIN5N`, `AIN6N`, `AIN6P`
-- stronger acute-angle reroutes: `AIN3P`, `AIN5P`
 - untouched/direct nets: `CLKIN`, `SCLK`, `DRDY`, `SYNC_RESET`, `CS`, `DIN`,
   `DOUT`, `AVDD`, `DVDD`, `REFP`, `CAP`, `AIN7N`, and `AIN7P`
 - rerouting additional traces cleanly now requires re-running
