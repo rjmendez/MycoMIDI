@@ -42,9 +42,9 @@ MAZE_GRID_COVERAGE = 0.74
 MAZE_PASS_COUNT = 5
 MAZE_PASS_WIDTH_MM = 0.26
 MAZE_PASS_WIDTH_FINE_MM = 0.19
-MAZE_FIELD_TILE_MM = 0.76
-MAZE_FIELD_WIDTH_MM = 0.285
-MAZE_FIELD_TILE_OVERLAP_MM = 1.4
+MAZE_FIELD_PITCH_MM = 0.54
+MAZE_FIELD_WIDTH_MM = 0.28
+MAZE_FIELD_PASSAGE_OPEN_RATIO = 0.66
 FRONT_STRIPE_PITCH_MM = 0.82
 FRONT_STRIPE_WIDTH_MM = 0.478
 FRONT_STRIPE_WAVE_AMPLITUDE_MM = 0.55
@@ -1563,6 +1563,101 @@ def _venation_region_geometry(region, *, seed: int, width_mm: float):
     return unary_union(geometries).buffer(0), path_count
 
 
+def _space_filling_maze_paths(region, *, angle_deg: float, width_mm: float, pitch_mm: float, seed: int):
+    center = region.centroid.coords[0]
+    rotated_region = affinity.rotate(region, -angle_deg, origin=center).buffer(0)
+    centerline_region = rotated_region.buffer(-((width_mm / 2.0) + 0.035), join_style=1, resolution=ARC_RESOLUTION).buffer(0)
+    if centerline_region.is_empty:
+        return []
+
+    min_x, min_y, max_x, max_y = centerline_region.bounds
+    columns = max(3, int(math.ceil((max_x - min_x) / pitch_mm)))
+    rows = max(3, int(math.ceil((max_y - min_y) / pitch_mm)))
+    sample_radius = (width_mm / 2.0) + 0.04
+    valid_cells: set[tuple[int, int]] = set()
+    for row in range(rows):
+        for column in range(columns):
+            point = (min_x + ((column + 0.5) * pitch_mm), min_y + ((row + 0.5) * pitch_mm))
+            if centerline_region.covers(Point(point).buffer(sample_radius, resolution=ARC_RESOLUTION)):
+                valid_cells.add((column, row))
+
+    if not valid_cells:
+        return []
+
+    adjacency = {
+        cell: [neighbor for neighbor in _grid_neighbors(*cell, columns, rows) if neighbor in valid_cells]
+        for cell in valid_cells
+    }
+    passages: set[frozenset[tuple[int, int]]] = set()
+    rng = random.Random(seed)
+    for component in _grid_components(adjacency):
+        start = min(component, key=lambda cell: (cell[1], cell[0]))
+        stack = [start]
+        visited = {start}
+        while stack:
+            current = stack[-1]
+            candidates = [neighbor for neighbor in adjacency[current] if neighbor not in visited]
+            if not candidates:
+                stack.pop()
+                continue
+            neighbor = rng.choice(candidates)
+            passages.add(frozenset((current, neighbor)))
+            visited.add(neighbor)
+            stack.append(neighbor)
+
+    edge_gap_mm = min(0.018, pitch_mm * 0.03)
+    wall_paths: list[list[tuple[float, float]]] = []
+    seen_edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+
+    def edge_key(start: tuple[float, float], end: tuple[float, float]) -> tuple[tuple[int, int], tuple[int, int]]:
+        first = (round(start[0] * 1000), round(start[1] * 1000))
+        second = (round(end[0] * 1000), round(end[1] * 1000))
+        return (first, second) if first <= second else (second, first)
+
+    def opens_passage(cell: tuple[int, int], neighbor: tuple[int, int]) -> bool:
+        if neighbor not in valid_cells or frozenset((cell, neighbor)) not in passages:
+            return False
+        first, second = sorted((cell, neighbor))
+        value = ((first[0] + 1) * 73_856_093) ^ ((first[1] + 1) * 19_349_663)
+        value ^= ((second[0] + 1) * 83_492_791) ^ ((second[1] + 1) * 2_654_435_761) ^ seed
+        return (value % 10_000) < int(MAZE_FIELD_PASSAGE_OPEN_RATIO * 10_000)
+
+    for column, row in valid_cells:
+        x0 = min_x + (column * pitch_mm)
+        y0 = min_y + (row * pitch_mm)
+        x1 = x0 + pitch_mm
+        y1 = y0 + pitch_mm
+        candidates = (
+            ((column - 1, row), (x0, y0 + edge_gap_mm), (x0, y1 - edge_gap_mm)),
+            ((column + 1, row), (x1, y0 + edge_gap_mm), (x1, y1 - edge_gap_mm)),
+            ((column, row - 1), (x0 + edge_gap_mm, y0), (x1 - edge_gap_mm, y0)),
+            ((column, row + 1), (x0 + edge_gap_mm, y1), (x1 - edge_gap_mm, y1)),
+        )
+        for neighbor, start, end in candidates:
+            if opens_passage((column, row), neighbor):
+                continue
+            key = edge_key(start, end)
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            wall = LineString([start, end]).buffer(
+                (width_mm / 2.0) + 0.01,
+                cap_style=2,
+                join_style=1,
+                resolution=ARC_RESOLUTION,
+            )
+            if centerline_region.covers(wall):
+                wall_paths.append([start, end])
+
+    restored_paths = []
+    for path in wall_paths:
+        if len(path) < 2:
+            continue
+        restored = affinity.rotate(LineString(path), angle_deg, origin=center)
+        restored_paths.append([(float(x), float(y)) for x, y in restored.coords])
+    return restored_paths
+
+
 def _maze_field_geometry(board_interior, open_area, anchors: list[Polygon], *, config: LayerTextureConfig):
     if not anchors:
         fallback = open_area.representative_point()
@@ -1574,8 +1669,9 @@ def _maze_field_geometry(board_interior, open_area, anchors: list[Polygon], *, c
     if safe_region.is_empty:
         return GeometryCollection(), 0
 
-    tile_mm = MAZE_FIELD_TILE_MM * (0.96 if config.label == "back" else 1.0)
+    pitch_mm = MAZE_FIELD_PITCH_MM * (0.98 if config.label == "back" else 1.0)
     width_mm = MAZE_FIELD_WIDTH_MM
+    angle_deg = 32.0 if config.label == "front" else -27.0
     field_parts = []
     path_count = 0
     seed_base = 409 if config.label == "front" else 653
@@ -1583,48 +1679,31 @@ def _maze_field_geometry(board_interior, open_area, anchors: list[Polygon], *, c
     for component_index, component in enumerate(sorted(_iter_polygons(safe_region), key=lambda polygon: polygon.area, reverse=True)):
         if component.area < MIN_COMPONENT_AREA_MM2:
             continue
-        min_x, min_y, max_x, max_y = component.bounds
-        bounds = (
-            min_x - MAZE_FIELD_TILE_OVERLAP_MM,
-            min_y - MAZE_FIELD_TILE_OVERLAP_MM,
-            max_x + MAZE_FIELD_TILE_OVERLAP_MM,
-            max_y + MAZE_FIELD_TILE_OVERLAP_MM,
-        )
-        columns = max(4, int(math.ceil((bounds[2] - bounds[0]) / tile_mm)))
-        rows = max(4, int(math.ceil((bounds[3] - bounds[1]) / tile_mm)))
-        geometry, paths = _paths_to_geometry(
-            truchet_weave_points(
-                columns,
-                rows,
-                seed=seed_base + (component_index * 37),
-                arc_segments=TRUCHET_ARC_SEGMENTS,
-            ),
-            bounds=bounds,
+        paths = _space_filling_maze_paths(
+            component,
+            angle_deg=angle_deg + ((component_index % 3) * 7.0),
             width_mm=width_mm,
-            region=component,
-            cap_style=2,
+            pitch_mm=pitch_mm,
+            seed=seed_base + (component_index * 37),
         )
-        if geometry.is_empty:
-            continue
-        field_parts.append(geometry)
-        path_count += paths
+        for path in paths:
+            if len(path) < 2:
+                continue
+            polygon = (
+                LineString(path)
+                .buffer(width_mm / 2.0, cap_style=2, join_style=1, resolution=ARC_RESOLUTION)
+                .intersection(component)
+                .buffer(0)
+            )
+            if polygon.is_empty or polygon.area < MIN_LINE_COMPONENT_AREA_MM2:
+                continue
+            field_parts.append(polygon)
+            path_count += 1
 
     if not field_parts:
         return GeometryCollection(), 0
 
-    geometry = unary_union(field_parts).intersection(open_area).intersection(board_interior).buffer(0)
-    if geometry.is_empty:
-        return GeometryCollection(), 0
-
-    geometry = _regularize_geometry(geometry, trim_mm=min(0.07, max(width_mm * 0.20, 0.045)))
-    geometry = _prune_compact_patches(
-        geometry,
-        max_area_mm2=0.30,
-        max_aspect_ratio=1.8,
-        max_span_mm=1.05,
-        min_area_mm2=0.04,
-    )
-    return geometry, path_count
+    return GeometryCollection(field_parts), path_count
 
 
 def _accent_geometry(kind: str, center: tuple[float, float], *, size_mm: float, config: LayerTextureConfig, seed: int, region):
@@ -1690,94 +1769,7 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
     maze_geometry, maze_segments = _maze_field_geometry(board_interior, open_area, anchors, config=config)
     if maze_geometry.is_empty:
         raise ValueError(f"{config.layer_name} maze-dominant fill produced no base geometry")
-    pattern_segments = maze_segments
-    safe_open_area = open_area.intersection(board_interior.buffer(-TEXTURE_EDGE_MARGIN_MM)).buffer(0)
-    if safe_open_area.is_empty:
-        return pattern_segments, maze_geometry
-
-    replacement_masks = []
-    replacement_parts = []
-
-    truchet_mask = _dominant_region_mask(safe_open_area, config=config, pattern_name="truchet")
-    if not truchet_mask.is_empty:
-        truchet_geometry, truchet_segments = _truchet_region_geometry(
-            truchet_mask,
-            seed=23 if config.label == "front" else 41,
-            width_mm=max(config.stripe_width_mm * 0.38, 0.17),
-        )
-        if not truchet_geometry.is_empty:
-            truchet_kept_mask = (
-                truchet_geometry.buffer(max(TRUCHET_TILE_MM * 0.42, config.stripe_width_mm * 1.2), join_style=1, resolution=ARC_RESOLUTION)
-                .intersection(truchet_mask)
-                .buffer(0)
-            )
-            replacement_masks.append(truchet_mask)
-            replacement_parts.append(truchet_geometry)
-            truchet_backfill = maze_geometry.intersection(truchet_mask.difference(truchet_kept_mask)).buffer(0)
-            if not truchet_backfill.is_empty:
-                replacement_parts.append(truchet_backfill)
-            pattern_segments += truchet_segments
-
-    venation_mask = _dominant_region_mask(safe_open_area, config=config, pattern_name="venation")
-    if not venation_mask.is_empty:
-        venation_geometry, venation_segments = _venation_region_geometry(
-            venation_mask,
-            seed=59 if config.label == "front" else 83,
-            width_mm=max(config.stripe_width_mm * 0.68, 0.23),
-        )
-        if not venation_geometry.is_empty:
-            venation_kept_mask = (
-                venation_geometry.buffer(config.stripe_width_mm * 0.92, join_style=1, resolution=ARC_RESOLUTION)
-                .intersection(venation_mask)
-                .buffer(0)
-            )
-            replacement_masks.append(venation_mask)
-            replacement_parts.append(venation_geometry)
-            venation_backfill = maze_geometry.intersection(venation_mask.difference(venation_kept_mask)).buffer(0)
-            if not venation_backfill.is_empty:
-                replacement_parts.append(venation_backfill)
-            pattern_segments += venation_segments
-
-    accent_candidates = _candidate_centers(safe_open_area, radius_mm=ACCENT_SIZE_MM, spacing_mm=ACCENT_REGION_SPACING_MM)
-    selected_accents: list[tuple[float, float]] = []
-    for accent_type, target_fractions, accent_size_mm, accent_seed in ACCENT_PATTERN_TARGETS[config.label]:
-        if not accent_candidates:
-            break
-        accent_center = _pick_center(
-            accent_candidates,
-            bounds=safe_open_area.bounds,
-            target_fractions=(target_fractions,),
-            selected=selected_accents,
-            min_distance_mm=(accent_size_mm * 1.8) + ACCENT_REGION_HALO_MM,
-        )
-        if accent_center is None:
-            continue
-        accent_mask = _circular_mask(safe_open_area, accent_center, accent_size_mm + ACCENT_REGION_HALO_MM)
-        accent_geometry, accent_segments = _accent_geometry(
-            accent_type,
-            accent_center,
-            size_mm=accent_size_mm,
-            config=config,
-            seed=accent_seed,
-            region=accent_mask,
-        )
-        if accent_geometry.is_empty:
-            continue
-        selected_accents.append(accent_center)
-        replacement_masks.append(accent_mask)
-        replacement_parts.append(accent_geometry)
-        pattern_segments += accent_segments
-
-    if not replacement_masks and not replacement_parts:
-        return pattern_segments, maze_geometry
-
-    replacement_mask = unary_union(replacement_masks).buffer(0) if replacement_masks else GeometryCollection()
-    base_geometry = maze_geometry.difference(replacement_mask).buffer(0) if replacement_masks else maze_geometry
-    final_geometry = unary_union([base_geometry, *replacement_parts]).intersection(open_area).intersection(board_interior).buffer(0)
-    final_geometry = _regularize_geometry(final_geometry)
-    if final_geometry.is_empty:
-        raise ValueError(f"{config.layer_name} decorative pattern mix produced no copper geometry")
-    return pattern_segments, final_geometry
+    return maze_segments, maze_geometry
 
 
 def _line_art_geometry(board_interior, open_area, anchors: list[Polygon]):
@@ -2116,8 +2108,8 @@ def apply_continuous_texture_fill(
         gnd_net_id=gnd_net.GetNetCode(),
         layer_stats=tuple(layer_stat for _config, _geometry, layer_stat in prepared_layers),
         maze_motif=(
-            "filled copper graphic polygons on F.Cu and B.Cu built from dense self-avoiding "
-            "maze corridors with broad Truchet and venation swaths plus phyllotaxis, rosette, "
-            "and superformula micro-accents, all clipped against per-layer real-copper obstacle unions"
+            "filled copper graphic polygons on F.Cu and B.Cu built from dense clipped labyrinth "
+            "wall fields with deterministic maze openings, all clipped against per-layer real-copper "
+            "obstacle unions"
         ),
     )
