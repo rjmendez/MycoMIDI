@@ -62,6 +62,7 @@ TRUCHET_TILE_MM = 1.32
 TRUCHET_ARC_SEGMENTS = 11
 VENATION_BASE_ATTRACTION_COUNT = 180
 VENATION_SLICE_COUNT = 3
+SLIVER_TRIM_MM = 0.03
 
 DOMINANT_PATTERN_TARGETS = {
     "front": {
@@ -1347,6 +1348,16 @@ def _paths_to_geometry(
     return geometry, path_count
 
 
+def _regularize_geometry(geometry, *, trim_mm: float = SLIVER_TRIM_MM):
+    geometry = geometry.buffer(0)
+    if geometry.is_empty or trim_mm <= 0.0:
+        return geometry
+    opened = geometry.buffer(-trim_mm, join_style=1, resolution=ARC_RESOLUTION)
+    if opened.is_empty:
+        return geometry
+    return opened.buffer(trim_mm, join_style=1, resolution=ARC_RESOLUTION).buffer(0)
+
+
 def _truchet_region_geometry(region, *, seed: int, width_mm: float):
     if region.is_empty:
         return GeometryCollection(), 0
@@ -1573,6 +1584,7 @@ def _mixed_pattern_geometry(board_interior, open_area, config: LayerTextureConfi
     replacement_mask = unary_union(replacement_masks).buffer(0)
     base_geometry = stripe_geometry.difference(replacement_mask).buffer(0)
     final_geometry = unary_union([base_geometry, *replacement_parts]).intersection(open_area).intersection(board_interior).buffer(0)
+    final_geometry = _regularize_geometry(final_geometry)
     if final_geometry.is_empty:
         raise ValueError(f"{config.layer_name} decorative pattern mix produced no copper geometry")
     return pattern_segments, final_geometry
